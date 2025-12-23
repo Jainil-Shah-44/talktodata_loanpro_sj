@@ -2213,7 +2213,7 @@ def get_validation_errors(dataset_id: str, validation_id: str, db: Session = Dep
             models.LoanRecord.m6_collection < 0,
             models.LoanRecord.m12_collection < 0
         ))
-    #added by jainil
+    #added by jainil on 21-12-25
     elif validation_id == "npa_le_woff":
         query = query.filter(
             or_(
