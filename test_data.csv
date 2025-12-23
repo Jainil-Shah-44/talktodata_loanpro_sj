@@ -1,0 +1,4 @@
+Loan No,DPD,Classification,Principal O/S,Product Type,State,POST NPA COLLECTION,POST W OFF COLLECTION,Arbitration status
+LOAN-0001,30,Standard,10000,Personal Loan,Maharashtra,500,0,None
+LOAN-0002,60,NPA,20000,Home Loan,Karnataka,1000,0,None
+LOAN-0003,90,Write-off,30000,Auto Loan,Delhi,1500,500,In Progress

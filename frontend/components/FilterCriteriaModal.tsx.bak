@@ -1,0 +1,283 @@
+import { useState, useEffect } from 'react';
+import { Modal, Button, Group, Text, Stack, TextInput, Select, NumberInput, Checkbox, CloseButton, Box } from '@mantine/core';
+import { IconPlus, IconTrash, IconCheck, IconX } from '@tabler/icons-react';
+
+export interface FilterCriteria {
+  field: string;
+  operator: string;
+  value?: number | string | null;
+  min_value?: number | null;
+  max_value?: number | null;
+  enabled: boolean;
+}
+
+export interface PoolSelectionTarget {
+  maxPoolValue: number;
+  sortField: string;
+  sortDirection: 'asc' | 'desc';
+  sumValueField: string;
+}
+
+interface FilterCriteriaModalProps {
+  opened: boolean;
+  onClose: () => void;
+  onApply: (filters: FilterCriteria[], target: PoolSelectionTarget) => void;
+  availableFields: { value: string; label: string }[];
+  savedFilters?: { id: string; name: string; criteria: FilterCriteria[] }[];
+  onSaveFilter?: (name: string, criteria: FilterCriteria[]) => void;
+  initialFilters?: FilterCriteria[];
+  initialTarget?: PoolSelectionTarget;
+}
+
+export function FilterCriteriaModal({
+  opened,
+  onClose,
+  onApply,
+  availableFields,
+  savedFilters = [],
+  onSaveFilter,
+  initialFilters = [{ field: 'collection_12m', operator: '>=', value: 5000, enabled: true }],
+  initialTarget = { maxPoolValue: 2500000, sortField: 'collection_12m', sortDirection: 'desc', sumValueField: 'principal_os_amt' }
+}: FilterCriteriaModalProps) {
+  const [filters, setFilters] = useState<FilterCriteria[]>(initialFilters);
+  const [target, setTarget] = useState<PoolSelectionTarget>(initialTarget);
+  const [selectedSavedFilter, setSelectedSavedFilter] = useState<string | null>(null);
+  const [newFilterName, setNewFilterName] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  const operatorOptions = [
+    { value: '=', label: '=' },
+    { value: '>', label: '>' },
+    { value: '>=', label: '>=' },
+    { value: '<', label: '<' },
+    { value: '<=', label: '<=' },
+    { value: 'between', label: 'Between' }
+  ];
+
+  const sortDirectionOptions = [
+    { value: 'desc', label: 'Descending' },
+    { value: 'asc', label: 'Ascending' }
+  ];
+
+  const valueFieldOptions = [
+    { value: 'principal_os_amt', label: 'Current POS' },
+    { value: 'total_amt_disb', label: 'Disbursed Amount' }
+  ];
+
+  const handleAddFilter = () => {
+    setFilters([...filters, { field: availableFields[0].value, operator: '=', value: null, enabled: true }]);
+  };
+
+  const handleRemoveFilter = (index: number) => {
+    setFilters(filters.filter((_, i) => i !== index));
+  };
+
+  const handleFilterChange = (index: number, field: keyof FilterCriteria, value: any) => {
+    const updatedFilters = [...filters];
+    updatedFilters[index] = { ...updatedFilters[index], [field]: value };
+    setFilters(updatedFilters);
+  };
+
+  const handleApply = () => {
+    onApply(filters, target);
+    onClose();
+  };
+
+  const handleSaveFilter = () => {
+    if (newFilterName && onSaveFilter) {
+      setIsSaving(true);
+      onSaveFilter(newFilterName, filters);
+      setNewFilterName('');
+      setIsSaving(false);
+    }
+  };
+
+  const handleLoadFilter = () => {
+    if (selectedSavedFilter && savedFilters) {
+      const selected = savedFilters.find(f => f.id === selectedSavedFilter);
+      if (selected) {
+        setFilters(selected.criteria);
+      }
+    }
+  };
+
+  const handleClearAll = () => {
+    setFilters([{ field: availableFields[0].value, operator: '=', value: null, enabled: true }]);
+  };
+
+  return (
+    <Modal 
+      opened={opened} 
+      onClose={onClose} 
+      title="🔍 Apply Selection Criteria" 
+      size="lg"
+    >
+      <Stack gap="md">
+        <Text fw={500}>Filters:</Text>
+        
+        {filters.map((filter, index) => (
+          <Group key={index} wrap="nowrap" align="center">
+            <Checkbox
+              checked={filter.enabled}
+              onChange={(e) => handleFilterChange(index, 'enabled', e.currentTarget.checked)}
+            />
+            
+            <Select
+              data={availableFields}
+              value={filter.field}
+              onChange={(value) => handleFilterChange(index, 'field', value)}
+              style={{ width: '140px' }}
+            />
+            
+            <Select
+              data={operatorOptions}
+              value={filter.operator}
+              onChange={(value) => handleFilterChange(index, 'operator', value)}
+              style={{ width: '100px' }}
+            />
+            
+            {filter.operator === 'between' ? (
+              <Group wrap="nowrap">
+                <NumberInput
+                  value={filter.min_value || undefined}
+                  onChange={(value) => handleFilterChange(index, 'min_value', value)}
+                  style={{ width: '100px' }}
+                  placeholder="Min"
+                />
+                <Text>to</Text>
+                <NumberInput
+                  value={filter.max_value || undefined}
+                  onChange={(value) => handleFilterChange(index, 'max_value', value)}
+                  style={{ width: '100px' }}
+                  placeholder="Max"
+                />
+              </Group>
+            ) : filter.field === 'state' ? (
+              <Select
+                data={[
+                  { value: 'Maharashtra', label: 'Maharashtra' },
+                  { value: 'Gujarat', label: 'Gujarat' },
+                  { value: 'Karnataka', label: 'Karnataka' }
+                ]}
+                value={filter.value?.toString() || ''}
+                onChange={(value) => handleFilterChange(index, 'value', value)}
+                style={{ width: '180px' }}
+              />
+            ) : (
+              <NumberInput
+                value={typeof filter.value === 'number' ? filter.value : undefined}
+                onChange={(value) => handleFilterChange(index, 'value', value)}
+                style={{ width: '180px' }}
+              />
+            )}
+            
+            <CloseButton
+              onClick={() => handleRemoveFilter(index)}
+              title="Remove filter"
+            />
+          </Group>
+        ))}
+        
+        <Button 
+          leftSection={<IconPlus size="1rem" />}
+          variant="outline" 
+          onClick={handleAddFilter}
+          fullWidth={false}
+          style={{ alignSelf: 'flex-start' }}
+        >
+          Add Filter
+        </Button>
+
+        <Box mt="md">
+          <Text fw={500}>🎯 Target Sub-Pool Selection</Text>
+          
+          <Group mt="sm" align="center">
+            <Text size="sm" w={120}>Max Pool Value:</Text>
+            <NumberInput
+              value={target.maxPoolValue}
+              onChange={(value) => setTarget({ ...target, maxPoolValue: typeof value === 'number' ? value : 0 })}
+              leftSection="₹"
+              style={{ width: '200px' }}
+            />
+            <Text size="xs" c="dimmed">(Cumulative selection cap)</Text>
+          </Group>
+          
+          <Group mt="sm" align="center">
+            <Text size="sm" w={120}>Sort Records By:</Text>
+            <Select
+              data={availableFields}
+              value={target.sortField}
+              onChange={(value) => setTarget({ ...target, sortField: value || 'collection_12m' })}
+              style={{ width: '150px' }}
+            />
+            <Select
+              data={sortDirectionOptions}
+              value={target.sortDirection}
+              onChange={(value) => setTarget({ ...target, sortDirection: value as 'asc' | 'desc' || 'desc' })}
+              style={{ width: '120px' }}
+            />
+          </Group>
+          
+          <Group mt="sm" align="center">
+            <Text size="sm" w={120}>Sum Value From:</Text>
+            <Select
+              data={valueFieldOptions}
+              value={target.sumValueField}
+              onChange={(value) => setTarget({ ...target, sumValueField: value || 'principal_os_amt' })}
+              style={{ width: '150px' }}
+            />
+            <Text size="xs" c="dimmed">(Used for cumulative sum)</Text>
+          </Group>
+        </Box>
+
+        {savedFilters && savedFilters.length > 0 && (
+          <Group mt="md">
+            <Select
+              label="Load saved filter"
+              data={savedFilters.map(f => ({ value: f.id, label: f.name }))}
+              value={selectedSavedFilter}
+              onChange={setSelectedSavedFilter}
+              style={{ width: '200px' }}
+            />
+            <Button 
+              onClick={handleLoadFilter} 
+              disabled={!selectedSavedFilter}
+              variant="outline"
+              mt={25}
+            >
+              Load
+            </Button>
+          </Group>
+        )}
+
+        {onSaveFilter && (
+          <Group mt="md">
+            <TextInput 
+              label="Save current filter as"
+              value={newFilterName}
+              onChange={(e) => setNewFilterName(e.currentTarget.value)}
+              style={{ width: '200px' }}
+            />
+            <Button 
+              onClick={handleSaveFilter} 
+              loading={isSaving}
+              disabled={!newFilterName}
+              variant="outline"
+              mt={25}
+            >
+              Save
+            </Button>
+          </Group>
+        )}
+
+        <Group justify="space-between" mt="lg">
+          <Button variant="light" leftSection={<IconX size="1rem" />} onClick={handleClearAll}>Clear All</Button>
+          <Group>
+            <Button variant="outline" onClick={onClose}>Cancel</Button>
+            <Button leftSection={<IconCheck size="1rem" />} onClick={handleApply}>Apply Filters</Button>
+          </Group>
+        </Group>
+      </Stack>
+    </Modal>
+  );
+}

@@ -1,0 +1,783 @@
+'use client';
+
+import { useState, useEffect } from 'react';
+import { 
+  Title, 
+  Card, 
+  Text, 
+  Group, 
+  Button, 
+  Center, 
+  Stack, 
+  Container, 
+  Paper, 
+  Alert, 
+  Badge, 
+  Select, 
+  Table, 
+  Loader, 
+  ScrollArea, 
+  Box 
+} from '@mantine/core';
+import { IconDatabase, IconInfoCircle, IconRefresh, IconFilter } from '@tabler/icons-react';
+import { useRouter, useSearchParams } from 'next/navigation';
+import { useDatasets } from '@/hooks/useDatasets';
+import { useUserStore } from '@/src/store/userStore';
+import { useSummaries, SummaryTable } from '@/hooks/useSummaries';
+import { FilterCriteriaModal, FilterCriteria, PoolSelectionTarget } from '@/components/FilterCriteriaModal';
+import { FilterResultsSummary } from '@/components/FilterResultsSummary';
+import { usePoolSelection } from '@/hooks/usePoolSelection';
+
+// Define LoanRecord interface
+interface LoanRecord {
+  id: string;
+  account_number: string;
+  customer_name?: string;
+  principal_os_amt: number;
+  total_amt_disb?: number;
+  dpd: number;
+  collection_12m?: number;
+  state?: string;
+  product_type?: string;
+  [key: string]: any;
+}
+
+// Format number with commas and optional decimal places
+const formatNumber = (num: number, decimals = 2) => {
+  if (num === null || num === undefined) return '-';
+  return num.toLocaleString('en-IN', { 
+    minimumFractionDigits: decimals,
+    maximumFractionDigits: decimals
+  });
+};
+
+// Format currency in lakhs/crores for Indian format
+const formatCurrency = (num: number) => {
+  if (num === null || num === undefined) return '-';
+  if (num === 0) return '0.00';
+  
+  // Convert to appropriate scale based on value
+  if (num >= 10000000) { // 1 crore = 10,000,000
+    return `${(num / 10000000).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Cr`;
+  } else if (num >= 100000) { // 1 lakh = 100,000
+    return `${(num / 100000).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} L`;
+  } else if (num >= 1000) { // For thousands
+    return `${(num / 1000).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}K`;
+  } else {
+    return num.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+};
+
+// Format percentage
+const formatPercent = (num: number) => {
+  if (num === null || num === undefined) return '-';
+  return `${num.toFixed(2)}%`;
+};
+
+export default function SummaryGenerationPage() {
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const datasetId = searchParams.get('dataset');
+  const { datasets, loading: datasetsLoading, error: datasetsError } = useDatasets();
+  const { summaryData, loading: summaryLoading, error: summaryError, fetchSummaryData, updateBuckets } = useSummaries(datasetId);
+  const user = useUserStore((state) => state.user);
+  const isAuthenticated = useUserStore((state) => state.isAuthenticated);
+  const [writeOffRows, setWriteOffRows] = useState<any[] | null>(null);
+  const [dpdRows, setDpdRows] = useState<any[] | null>(null);
+  const [savingWriteOff, setSavingWriteOff] = useState(false);
+  const [savingDpd, setSavingDpd] = useState(false);
+  
+  // Filter state
+  const [filterModalOpen, setFilterModalOpen] = useState(false);
+  const [filters, setFilters] = useState<FilterCriteria[]>([{
+    field: 'collection_12m',
+    operator: '>=',
+    value: 5000,
+    enabled: true
+  }]);
+  const [target, setTarget] = useState<PoolSelectionTarget>({
+    maxPoolValue: 2500000,
+    sortField: 'collection_12m',
+    sortDirection: 'desc',
+    sumValueField: 'principal_os_amt'
+  });
+  const [savedFilters, setSavedFilters] = useState<{ id: string; name: string; criteria: FilterCriteria[] }[]>([]);
+  const [filterResults, setFilterResults] = useState<{
+    totalPoolValue: number;
+    filteredRecordCount: number;
+    selectedSubPoolCount: number;
+    selectedSubPoolValue: number;
+  } | null>(null);
+  
+  // Pool selection hook for filtering functionality
+  const { 
+    filteredRecords, 
+    selectedRecords, 
+    applyFilters,
+    optimizeSelection,
+    saveSelection,
+    updateFilterCriteria,
+    isFiltering,
+    isOptimizing,
+    isSaving,
+    filterError: poolSelectionError,
+    totalFilteredAmount
+  } = usePoolSelection(datasetId);
+  
+  // Apply filtered records to the summary tables
+  const applyFiltersToSummaries = (filteredLoanRecords: LoanRecord[]) => {
+    console.log('====== SUMMARY UPDATE PROCESS ======');
+    
+    // Always log the state of filteredLoanRecords
+    console.log(`Filtered records count: ${filteredLoanRecords?.length || 0}`);
+    
+    if (!filteredLoanRecords || filteredLoanRecords.length === 0) {
+      console.log('⚠️ WARNING: Empty filtered records array provided to applyFiltersToSummaries');
+    }
+    
+    if (!summaryData) {
+      console.log('⚠️ WARNING: No summary data available, cannot update summaries');
+      return;
+    }
+    
+    // Debug: Log the first few records to validate data structure
+    if (filteredLoanRecords && filteredLoanRecords.length > 0) {
+      console.log('First record sample:', JSON.stringify(filteredLoanRecords[0], null, 2));
+      console.log('DPD values sample:', filteredLoanRecords.slice(0, 5).map(r => r.dpd));
+      console.log('Principal values sample:', filteredLoanRecords.slice(0, 5).map(r => r.principal_os_amt));
+    }
+    
+    console.log(`Applying ${filteredLoanRecords.length} filtered records to summary tables`);
+    
+    // Update Write-Off Pool data
+    if (summaryData.writeOffPool) {
+      const filteredWriteOffData = {...summaryData.writeOffPool};
+      
+      // Update the write-off pool rows with filtered data
+      if (filteredWriteOffData.rows) {
+        // Calculate total principal amount for percentage calculations
+        const totalPrincipal = filteredLoanRecords.reduce((sum, r) => sum + (r.principal_os_amt || 0), 0);
+        console.log(`Total principal amount in filtered records: ${totalPrincipal}`);
+        
+        // Recalculate bucket totals based on filtered records
+        const updatedRows = filteredWriteOffData.rows.map(row => {
+          const lowerBound = row.lowerBound || 0;
+          const upperBound = row.upperBound || Number.MAX_SAFE_INTEGER;
+          
+          // Filter records that fall into this bucket
+          const bucketRecords = filteredLoanRecords.filter(record => {
+            const dpd = record.dpd || 0;
+            return dpd >= lowerBound && dpd < upperBound;
+          });
+          
+          // Calculate totals for this bucket
+          const totalPos = bucketRecords.reduce((sum, r) => sum + (r.principal_os_amt || 0), 0);
+          const count = bucketRecords.length;
+          
+          // Calculate percentage safely
+          const percentage = totalPrincipal > 0 ? (totalPos / totalPrincipal * 100) : 0;
+          
+          console.log(`Bucket ${lowerBound}-${upperBound}: ${count} records, ${totalPos} total POS (${percentage.toFixed(2)}%)`);
+          
+          return {
+            ...row,
+            totalPos,
+            count,
+            percentage
+          };
+        });
+        
+        console.log('Setting updated Write-Off Pool rows:', updatedRows.length);
+        setWriteOffRows(updatedRows);
+      }
+    }
+    
+    // Update DPD Summary data
+    if (summaryData.dpdSummary) {
+      const filteredDpdData = {...summaryData.dpdSummary};
+      
+      // Update the DPD summary rows with filtered data
+      if (filteredDpdData.rows) {
+        // Calculate total principal amount for percentage calculations
+        const totalPrincipal = filteredLoanRecords.reduce((sum, r) => sum + (r.principal_os_amt || 0), 0);
+        
+        // Recalculate bucket totals based on filtered records
+        const updatedRows = filteredDpdData.rows.map(row => {
+          const lowerBound = row.lowerBound || 0;
+          const upperBound = row.upperBound || Number.MAX_SAFE_INTEGER;
+          
+          // Filter records that fall into this bucket
+          const bucketRecords = filteredLoanRecords.filter(record => {
+            const dpd = record.dpd || 0;
+            return dpd >= lowerBound && dpd < upperBound;
+          });
+          
+          // Calculate totals for this bucket
+          const totalPos = bucketRecords.reduce((sum, r) => sum + (r.principal_os_amt || 0), 0);
+          const count = bucketRecords.length;
+          
+          // Calculate percentage safely
+          const percentage = totalPrincipal > 0 ? (totalPos / totalPrincipal * 100) : 0;
+          
+          console.log(`DPD Bucket ${lowerBound}-${upperBound}: ${count} records, ${totalPos} total POS (${percentage.toFixed(2)}%)`);
+          
+          return {
+            ...row,
+            totalPos,
+            count,
+            percentage
+          };
+        });
+        
+        console.log('Setting updated DPD Summary rows:', updatedRows.length);
+        setDpdRows(updatedRows);
+      }
+    }
+  };
+
+  // Effect hook to apply filtered records to summaries when they change
+  useEffect(() => {
+    console.log('FILTER EFFECT TRIGGERED - Filtered records updated:', filteredRecords.length);
+    
+    // Always update filter results, even if records array is empty (to show 0 results)
+    setFilterResults({
+      totalPoolValue: totalFilteredAmount || 0,
+      filteredRecordCount: filteredRecords.length,
+      selectedSubPoolCount: selectedRecords.length,
+      selectedSubPoolValue: selectedRecords.reduce((sum, record) => sum + (record.principal_os_amt || 0), 0)
+    });
+    
+    // Only apply filters to summaries if we have records
+    if (filteredRecords && filteredRecords.length > 0) {
+      console.log('Applying filtered records to summaries');
+      applyFiltersToSummaries(filteredRecords);
+    } else {
+      console.log('No filtered records to apply to summaries');
+      // For better UX, show empty state in summary tables
+      if (summaryData?.writeOffPool?.rows) {
+        const emptyWriteOffRows = summaryData.writeOffPool.rows.map(row => ({
+          ...row,
+          totalPos: 0,
+          count: 0,
+          percentage: 0
+        }));
+        setWriteOffRows(emptyWriteOffRows);
+      }
+      
+      if (summaryData?.dpdSummary?.rows) {
+        const emptyDpdRows = summaryData.dpdSummary.rows.map(row => ({
+          ...row,
+          totalPos: 0,
+          count: 0,
+          percentage: 0
+        }));
+        setDpdRows(emptyDpdRows);
+      }
+    }
+  }, [filteredRecords, selectedRecords, totalFilteredAmount, summaryData]);  
+
+  useEffect(() => {
+    if (!datasetId && datasets.length > 0) {
+      router.push(`/dashboard/summary?dataset=${datasets[0].id}`);
+    }
+  }, [datasetId, datasets, router]);
+
+  console.log("summaryData raj", summaryData);
+
+  const currentDataset = datasets.find(d => d.id === datasetId) || (datasets.length > 0 ? datasets[0] : null);
+
+  if (datasetsLoading || summaryLoading) {
+    return (
+      <Container size="xl" py="md">
+        <Center h={400}>
+          <Loader size="lg" />
+        </Center>
+      </Container>
+    );
+  }
+
+  if (!isAuthenticated || !user) {
+    router.push('/login');
+    return null;
+  }
+
+  // Helper to recalculate bounds for a table
+  function recalculateBounds(rows: any[], changedIdx: number, key: 'lowerBound' | 'upperBound', value: number) {
+    const updated = rows.map((r, i) => ({ ...r }));
+    updated[changedIdx][key] = value;
+    // Calculate new interval for the changed row
+    const interval = Math.abs((updated[changedIdx].upperBound ?? 0) - (updated[changedIdx].lowerBound ?? 0));
+    // If lowerBound changed, update previous row's upperBound
+    if (key === 'lowerBound' && changedIdx > 0) {
+      updated[changedIdx - 1].upperBound = value;
+    }
+    // If upperBound changed, update next row's lowerBound
+    if (key === 'upperBound' && changedIdx + 1 < updated.length) {
+      updated[changedIdx + 1].lowerBound = value;
+    }
+    // Recalculate all subsequent rows to keep the same interval
+    for (let i = changedIdx + 1; i < updated.length; i++) {
+      updated[i].lowerBound = updated[i - 1].upperBound;
+      // For the last bucket, keep upperBound open-ended
+      if (i === updated.length - 1) {
+        updated[i].upperBound = 9999999999;
+      } else {
+        updated[i].upperBound = updated[i].lowerBound + interval;
+      }
+    }
+    return updated;
+  }
+
+  // Save handler for Write-Off Pool
+  const handleSaveWriteOff = async () => {
+    if (!writeOffRows) return;
+    setSavingWriteOff(true);
+    try {
+      await updateBuckets({ type: 'writeOffPool', buckets: writeOffRows.map(({ lowerBound, upperBound }) => ({ lowerBound, upperBound })) });
+      setWriteOffRows(null); // Reset local state to use fresh backend data
+      await fetchSummaryData();
+    } finally {
+      setSavingWriteOff(false);
+    }
+  };
+  // Save handler for DPD Summary
+  const handleSaveDpd = async () => {
+    if (!dpdRows) return;
+    setSavingDpd(true);
+    try {
+      await updateBuckets({ type: 'dpdSummary', buckets: dpdRows.map(({ lowerBound, upperBound }) => ({ lowerBound, upperBound })) });
+      setDpdRows(null);
+      await fetchSummaryData();
+    } finally {
+      setSavingDpd(false);
+    }
+  };
+
+  // Render a summary table
+  const renderSummaryTable = (table: SummaryTable, rows: any[] | null, setRows: ((rows: any[]) => void) | undefined, onSave: (() => void) | undefined, saving: boolean) => {
+    // Ensure lowerBound and upperBound columns exist
+    let columns = table.columns;
+    const colKeys = columns.map(c => c.key);
+    if (!colKeys.includes('lowerBound')) {
+      columns = [
+        ...columns.slice(0, 1),
+        { key: 'lowerBound', title: 'Lower Bound' },
+        ...columns.slice(1)
+      ];
+    }
+    if (!colKeys.includes('upperBound')) {
+      columns = [
+        ...columns.slice(0, 2),
+        { key: 'upperBound', title: 'Upper Bound' },
+        ...columns.slice(2)
+      ];
+    }
+    const editableRows = rows ? rows : table.rows;
+
+    return (
+      <Paper withBorder p="md" radius="md" mb="lg">
+        <Group justify="space-between" mb="md">
+          <Title order={4}>{table.title}</Title>
+        </Group>
+        {table.description && (
+          <Text size="sm" c="dimmed" mb="md">{table.description}</Text>
+        )}
+        <ScrollArea>
+          <Table striped highlightOnHover withTableBorder withColumnBorders>
+            <Table.Thead>
+              <Table.Tr>
+                {columns.map((column) => (
+                  <Table.Th key={column.key}>{column.title}</Table.Th>
+                ))}
+              </Table.Tr>
+            </Table.Thead>
+            <Table.Tbody>
+              {editableRows.map((row, rowIndex) => (
+                <Table.Tr key={rowIndex} bg={row.bucket === 'Grand Total' ? 'var(--mantine-color-blue-0)' : undefined}>
+                  {columns.map((column, colIndex) => (
+                    <Table.Td key={`${rowIndex}-${colIndex}`}>
+                      {(() => {
+                        if ((column.key === 'lowerBound' || column.key === 'upperBound') && setRows) {
+                          return (
+                            <input
+                              type="number"
+                              value={row[column.key] ?? ''}
+                              min={0}
+                              onChange={e => {
+                                const updated = recalculateBounds(editableRows, rowIndex, column.key as 'lowerBound' | 'upperBound', Number(e.target.value));
+                                setRows(updated);
+                              }}
+                              style={{ width: 90 }}
+                            />
+                          );
+                        }
+                        if (column.key === 'percentOfPos') {
+                          return formatPercent(row[column.key] as number);
+                        } else if (column.key === 'pos') {
+                          return formatCurrency(row[column.key] as number);
+                        } else if ([
+                          '3mCol', '6mCol', '12mCol', 'totalCollection'
+                        ].includes(column.key)) {
+                          const rawValue = row[column.key];
+                          if (rawValue === 0 || rawValue === '0' || rawValue === null || rawValue === undefined) {
+                            return '0.00';
+                          }
+                          const numValue = parseFloat(rawValue);
+                          return formatCurrency(numValue);
+                        } else if (typeof row[column.key] === 'number') {
+                          return formatNumber(row[column.key] as number);
+                        } else {
+                          return row[column.key]?.toString() || '-';
+                        }
+                      })()}
+                    </Table.Td>
+                  ))}
+                </Table.Tr>
+              ))}
+            </Table.Tbody>
+          </Table>
+        </ScrollArea>
+        {setRows && onSave && (
+          <Group justify="flex-end" mt="md">
+            <Button onClick={onSave} loading={saving} disabled={saving}>
+              Save & Recompute
+            </Button>
+          </Group>
+        )}
+      </Paper>
+    );
+  };
+
+  // Handle filter modal
+  const handleOpenFilterModal = () => setFilterModalOpen(true);
+  const handleCloseFilterModal = () => setFilterModalOpen(false);
+  
+  // Available fields for filtering
+  const availableFields = [
+    { value: 'collection_12m', label: '12M Collection' },
+    { value: 'dpd', label: 'DPD' },
+    { value: 'state', label: 'State' },
+    { value: 'principal_os_amt', label: 'Principal Outstanding' },
+    { value: 'product_type', label: 'Product Type' }
+  ];
+  
+  // Handle applying filters
+  const handleApplyFilters = (newFilters: FilterCriteria[], target: PoolSelectionTarget) => {
+    console.log('handleApplyFilters called with filters:', JSON.stringify(newFilters, null, 2));
+    
+    // Convert from component filter format to hook format
+    const hookFilterCriteria: Record<string, any> = {};
+    
+    // Make sure we're working with number values not strings
+    newFilters.forEach(filter => {
+      if (filter.enabled) {
+        // Convert string values to numbers for numeric fields
+        let value = filter.value;
+        if (typeof value === 'string' && !isNaN(Number(value))) {
+          value = Number(value);
+        }
+        
+        // Convert min/max values to numbers if they're strings
+        let minValue = filter.min_value;
+        if (typeof minValue === 'string' && !isNaN(Number(minValue))) {
+          minValue = Number(minValue);
+        }
+        
+        let maxValue = filter.max_value;
+        if (typeof maxValue === 'string' && !isNaN(Number(maxValue))) {
+          maxValue = Number(maxValue);
+        }
+        
+        hookFilterCriteria[filter.field] = {
+          operator: filter.operator,
+          value: value,
+          ...(minValue !== undefined && { min_value: minValue }),
+          ...(maxValue !== undefined && { max_value: maxValue })
+        };
+        
+        console.log(`Filter on '${filter.field}': ${filter.operator} ${value || ''} ${minValue !== undefined ? `min: ${minValue}` : ''} ${maxValue !== undefined ? `max: ${maxValue}` : ''}`);
+      }
+    });
+    
+    console.log('Final hook filter criteria:', JSON.stringify(hookFilterCriteria, null, 2));
+    
+    // Save filter state
+    setFilters(newFilters);
+    setTarget(target);
+    
+    // Close the modal
+    setFilterModalOpen(false);
+    
+    // Set loading state for better UX
+    setFilterResults({
+      totalPoolValue: 0,
+      filteredRecordCount: 0,
+      selectedSubPoolCount: 0,
+      selectedSubPoolValue: 0
+    });
+    
+    // We can't directly clear filteredRecords since it comes from the hook
+    // The applyFilters() call below will reset the results
+    
+    // Update filter criteria in the hook
+    Object.entries(hookFilterCriteria).forEach(([field, criteria]) => {
+      console.log(`Setting filter criterion for '${field}'`);
+      // Apply the filter criteria to the hook
+      updateFilterCriteria(
+        field, 
+        // @ts-ignore - we know these properties exist
+        criteria.operator, 
+        criteria.value, 
+        criteria.min_value, 
+        criteria.max_value
+      );
+    });
+    
+    console.log('Applying filters to API - waiting for results...');
+    
+    // Apply filters to get filtered records from API
+    // This is async and will update filteredRecords when complete
+    applyFilters();
+    
+    // After filtering, optimize selection based on target amount
+    setTimeout(() => {
+      console.log('Optimizing selection with target amount:', target.maxPoolValue);
+      optimizeSelection(target.maxPoolValue, target.sortField);
+    }, 1000); // Small delay to let the filter complete first
+  };
+
+  // Apply filtered records to the summary tables
+  const applyFiltersToSummaries = (filteredLoanRecords: LoanRecord[]) => {
+    console.log('====== SUMMARY UPDATE PROCESS ======');
+    
+    // Always log the state of filteredLoanRecords
+    console.log(`Filtered records count: ${filteredLoanRecords?.length || 0}`);
+    
+    if (!filteredLoanRecords || filteredLoanRecords.length === 0) {
+      console.log('⚠️ WARNING: Empty filtered records array provided to applyFiltersToSummaries');
+    }
+    
+    if (!summaryData) {
+      console.log('⚠️ WARNING: No summary data available, cannot update summaries');
+      return;
+    }
+    
+    // Debug: Log the first few records to validate data structure
+    if (filteredLoanRecords && filteredLoanRecords.length > 0) {
+      console.log('First record sample:', JSON.stringify(filteredLoanRecords[0], null, 2));
+      console.log('DPD values sample:', filteredLoanRecords.slice(0, 5).map(r => r.dpd));
+      console.log('Principal values sample:', filteredLoanRecords.slice(0, 5).map(r => r.principal_os_amt));
+    }
+    
+    console.log(`Applying ${filteredLoanRecords.length} filtered records to summary tables`);
+    
+    // Update Write-Off Pool data
+    if (summaryData.writeOffPool) {
+      const filteredWriteOffData = {...summaryData.writeOffPool};
+      
+      // Update the write-off pool rows with filtered data
+      if (filteredWriteOffData.rows) {
+        // Calculate total principal amount for percentage calculations
+        const totalPrincipal = filteredLoanRecords.reduce((sum, r) => sum + (r.principal_os_amt || 0), 0);
+        console.log(`Total principal amount in filtered records: ${totalPrincipal}`);
+        
+        // Recalculate bucket totals based on filtered records
+        const updatedRows = filteredWriteOffData.rows.map(row => {
+          const lowerBound = row.lowerBound || 0;
+          const upperBound = row.upperBound || Number.MAX_SAFE_INTEGER;
+          
+          // Filter records that fall into this bucket
+          const bucketRecords = filteredLoanRecords.filter(record => {
+            const dpd = record.dpd || 0;
+            return dpd >= lowerBound && dpd < upperBound;
+          });
+          
+          // Calculate totals for this bucket
+          const totalPos = bucketRecords.reduce((sum, r) => sum + (r.principal_os_amt || 0), 0);
+          const count = bucketRecords.length;
+          
+          // Calculate percentage safely
+          const percentage = totalPrincipal > 0 ? (totalPos / totalPrincipal * 100) : 0;
+          
+          console.log(`Bucket ${lowerBound}-${upperBound}: ${count} records, ${totalPos} total POS (${percentage.toFixed(2)}%)`);
+          
+          return {
+            ...row,
+            totalPos,
+            count,
+            percentage
+          };
+        });
+        
+        console.log('Setting updated Write-Off Pool rows:', updatedRows.length);
+        setWriteOffRows(updatedRows);
+      }
+    }
+    
+    // Update DPD Summary data
+    if (summaryData.dpdSummary) {
+      const filteredDpdData = {...summaryData.dpdSummary};
+      
+      // Update the DPD summary rows with filtered data
+      if (filteredDpdData.rows) {
+        // Calculate total principal amount for percentage calculations
+        const totalPrincipal = filteredLoanRecords.reduce((sum, r) => sum + (r.principal_os_amt || 0), 0);
+        
+        // Recalculate bucket totals based on filtered records
+        const updatedRows = filteredDpdData.rows.map(row => {
+          const lowerBound = row.lowerBound || 0;
+          const upperBound = row.upperBound || Number.MAX_SAFE_INTEGER;
+          
+          // Filter records that fall into this bucket
+          const bucketRecords = filteredLoanRecords.filter(record => {
+            const dpd = record.dpd || 0;
+            return dpd >= lowerBound && dpd < upperBound;
+          });
+          
+          // Calculate totals for this bucket
+          const totalPos = bucketRecords.reduce((sum, r) => sum + (r.principal_os_amt || 0), 0);
+          const count = bucketRecords.length;
+          
+          // Calculate percentage safely
+          const percentage = totalPrincipal > 0 ? (totalPos / totalPrincipal * 100) : 0;
+          
+          console.log(`DPD Bucket ${lowerBound}-${upperBound}: ${count} records, ${totalPos} total POS (${percentage.toFixed(2)}%)`);
+          
+          return {
+            ...row,
+            totalPos,
+            count,
+            percentage
+          };
+        });
+        
+        console.log('Setting updated DPD Summary rows:', updatedRows.length);
+        setDpdRows(updatedRows);
+      }
+    }
+  };
+
+  // Handle saving filter
+  const handleSaveFilter = (name: string, criteria: FilterCriteria[]) => {
+    const newSavedFilter = {
+      id: `filter-${Date.now()}`,
+      name,
+      criteria
+    };
+    
+    setSavedFilters([...savedFilters, newSavedFilter]);
+    // In a real app, you would save this to the backend
+  };
+  
+  return (
+    <Container size="xl" py="md">
+      <Group justify="space-between" mb="lg">
+        <Title order={2}>Summary Generation</Title>
+        <Group>
+          <Button 
+            leftSection={<IconFilter size="1rem" />} 
+            variant="outline" 
+            onClick={handleOpenFilterModal}
+          >
+            Apply Selection Criteria
+          </Button>
+          <Button 
+            leftSection={<IconRefresh size="1rem" />} 
+            variant="light" 
+            onClick={() => fetchSummaryData()}
+          >
+            Refresh Data
+          </Button>
+        </Group>
+      </Group>
+
+      {(datasetsError || summaryError || poolSelectionError) && (
+        <Alert icon={<IconInfoCircle size="1rem" />} title="API Error" color="red" mb="md">
+          {datasetsError || summaryError || String(poolSelectionError)}
+        </Alert>
+      )}
+      
+      {/* Filter Results Summary */}
+      {filterResults && (
+        <Box mb="md">
+          <FilterResultsSummary
+            totalPoolValue={filterResults.totalPoolValue}
+            filteredRecordCount={filterResults.filteredRecordCount}
+            targetPoolLimit={target.maxPoolValue}
+            selectedSubPoolCount={filterResults.selectedSubPoolCount}
+            selectedSubPoolValue={filterResults.selectedSubPoolValue}
+          />
+        </Box>
+      )}
+      
+      {/* Filter Criteria Modal */}
+      <FilterCriteriaModal
+        opened={filterModalOpen}
+        onClose={handleCloseFilterModal}
+        onApply={handleApplyFilters}
+        availableFields={availableFields}
+        savedFilters={savedFilters}
+        onSaveFilter={handleSaveFilter}
+        initialFilters={filters}
+        initialTarget={target}
+      />
+      
+      <Card withBorder p="md" radius="md" mb="lg">
+        <Group justify="space-between">
+          <Group>
+            <IconDatabase size="1.5rem" stroke={1.5} />
+            <div>
+              <Text fw={500} size="lg">
+                {currentDataset ? currentDataset.name : 'No Dataset Selected'}
+              </Text>
+              {currentDataset?.description && (
+                <Text size="xs" c="dimmed">{currentDataset.description}</Text>
+              )}
+            </div>
+          </Group>
+          
+          <Select
+            placeholder="Change Dataset"
+            data={datasets.map(d => ({ value: d.id, label: d.name }))}
+            value={currentDataset?.id}
+            onChange={(value) => {
+              if (value) {
+                router.push(`/dashboard/summary?dataset=${value}`);
+              }
+            }}
+            w={220}
+          />
+        </Group>
+      </Card>
+
+      {summaryLoading ? (
+        <Center h={200}>
+          <Loader size="lg" />
+        </Center>
+      ) : !summaryData ? (
+        <Paper withBorder p="lg" mb="lg">
+          <Center py="xl">
+            <Stack align="center" gap="md">
+              <Title order={3}>No Summary Data Available</Title>
+              <Text c="dimmed" ta="center" maw={500}>
+                {summaryError ? 
+                  "The summary API endpoint returned a 404 error. This likely means the summary generation functionality needs to be implemented on the backend." :
+                  "There is no summary data available for this dataset yet. Click the button below to generate summaries."}
+              </Text>
+              {!summaryError && (
+                <Button mt="md" onClick={() => fetchSummaryData()}>
+                  Generate Summaries
+                </Button>
+              )}
+            </Stack>
+          </Center>
+        </Paper>
+      ) : (
+        <>
+          {summaryData.writeOffPool && renderSummaryTable(summaryData.writeOffPool, writeOffRows, setWriteOffRows, handleSaveWriteOff, savingWriteOff)}
+          {summaryData.dpdSummary && renderSummaryTable(summaryData.dpdSummary, dpdRows, setDpdRows, handleSaveDpd, savingDpd)}
+        </>
+      )}
+    </Container>
+  );
+}

@@ -1,0 +1,62 @@
+import { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { summaryService } from '@/src/api/services';
+
+export interface SummaryTable {
+  id: string;
+  title: string;
+  description?: string;
+  columns: {
+    key: string;
+    title: string;
+    format?: (value: any) => string;
+  }[];
+  rows: Record<string, any>[];
+}
+
+export interface SummaryData {
+  writeOffPool: SummaryTable;
+  dpdSummary: SummaryTable;
+  // We'll add more tables as needed
+  [key: string]: SummaryTable;
+}
+
+interface FilterCriteria {
+  [key: string]: {
+    operator: string;
+    value: number | string | null;
+    min_value?: number;
+    max_value?: number;
+  };
+}
+
+const fetchSummaryData = async (datasetId: string, filterCriteria?: FilterCriteria) => {
+  try {
+    console.log('[useSummaries] Fetching summary for dataset:', datasetId);
+    if (filterCriteria) {
+      console.log('[useSummaries] Using filter criteria:', filterCriteria);
+      return await summaryService.getFilteredSummary(datasetId, filterCriteria);
+    } else {
+      console.log('[useSummaries] Fetching all records summary');
+      return await summaryService.getSummary(datasetId);
+    }
+  } catch (error) {
+    console.error('[useSummaries] Error fetching summary:', error);
+    throw error;
+  }
+};
+
+export function useSummaries(datasetId: string | null, filterCriteria?: FilterCriteria) {
+  return useQuery({
+    queryKey: ['summary', datasetId, filterCriteria],
+    queryFn: () => {
+      if (!datasetId) throw new Error('Dataset ID is required');
+      return fetchSummaryData(datasetId, filterCriteria);
+    },
+    enabled: !!datasetId,
+    staleTime: 30000, // 30 seconds
+    gcTime: 60000, // 1 minute (formerly cacheTime)
+  });
+}
+
+// No mock data - we'll only use real data from the backend

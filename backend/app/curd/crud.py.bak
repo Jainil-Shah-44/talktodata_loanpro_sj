@@ -1,0 +1,638 @@
+from sqlalchemy.orm import Session
+from app.models import models
+from app.schemas import schemas
+from typing import List, Optional
+from uuid import UUID
+import uuid
+import json
+import datetime
+import re
+from sqlalchemy.orm import Session
+from passlib.context import CryptContext
+
+# Password hashing context - use sha256_crypt instead of bcrypt due to compatibility issues
+pwd_context = CryptContext(schemes=["sha256_crypt"], deprecated="auto")
+
+class CRUDUser:
+    def get_user(self, db: Session, user_id: UUID) -> Optional[models.User]:
+        return db.query(models.User).filter(models.User.id == user_id).first()
+
+    def get_user_by_email(self, db: Session, email: str) -> Optional[models.User]:
+        return db.query(models.User).filter(models.User.email == email).first()
+
+    def create_user(self, db: Session, user: schemas.UserCreate) -> models.User:
+        hashed_password = self.get_password_hash(user.password)
+        db_user = models.User(
+            email=user.email,
+            hashed_password=hashed_password,
+            full_name=user.full_name
+        )
+        db.add(db_user)
+        db.commit()
+        db.refresh(db_user)
+        return db_user
+    
+    def authenticate_user(self, db: Session, email: str, password: str) -> Optional[models.User]:
+        user = self.get_user_by_email(db, email=email)
+        if not user:
+            return None
+        
+        # For development, accept admin@example.com with password123
+        if email == "admin@example.com" and password == "password123":
+            return user
+            
+        # For other users, verify password normally
+        if not self.verify_password(password, user.hashed_password):
+            return None
+            
+        return user
+    
+    def verify_password(self, plain_password: str, hashed_password: str) -> bool:
+        # For development, accept admin@example.com with password123
+        if plain_password == "password123" and hashed_password == "admin_password_hash":
+            return True
+            
+        # For other passwords, use normal verification
+        try:
+            return pwd_context.verify(plain_password, hashed_password)
+        except Exception:
+            # If verification fails due to hash format issues, return False
+            return False
+    
+    def get_password_hash(self, password: str) -> str:
+        return pwd_context.hash(password)
+
+class CRUDDataset:
+    def get_dataset(self, db: Session, dataset_id: UUID) -> Optional[models.Dataset]:
+        return db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+        
+    def get_datasets(self, db: Session, user_id: UUID) -> List[models.Dataset]:
+        return db.query(models.Dataset).filter(models.Dataset.user_id == user_id).all()
+
+    def create_dataset(self, db: Session, dataset: schemas.DatasetCreate, user_id: UUID, file_name: str, file_size: Optional[int] = None) -> models.Dataset:
+        db_dataset = models.Dataset(
+            **dataset.dict(),
+            user_id=user_id,
+            file_name=file_name,
+            file_size=file_size
+        )
+        db.add(db_dataset)
+        db.commit()
+        db.refresh(db_dataset)
+        return db_dataset
+
+class CRUDLoanRecord:
+    def get_loan_records(self, db: Session, dataset_id: UUID, skip: int = 0, limit: int = 100) -> List[models.LoanRecord]:
+        print(f"Fetching records for dataset_id: {dataset_id}, skip: {skip}, limit: {limit}")
+        records = db.query(models.LoanRecord).filter(
+            models.LoanRecord.dataset_id == dataset_id
+        ).offset(skip).limit(limit).all()
+        print(f"Found {len(records)} records")
+        
+        # If no records found, log some debug info
+        if len(records) == 0:
+            # Check if the dataset exists
+            dataset = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+            if dataset:
+                print(f"Dataset exists with name: {dataset.name}, total_records: {dataset.total_records}")
+                # Check if any records exist for this dataset without pagination
+                all_records_count = db.query(models.LoanRecord).filter(
+                    models.LoanRecord.dataset_id == dataset_id
+                ).count()
+                print(f"Total records in database for this dataset: {all_records_count}")
+            else:
+                print(f"Dataset with id {dataset_id} not found")
+        
+        return records
+
+    def create_loan_records(self, db: Session, records: List[dict], dataset_id: UUID):
+        """Create loan records from a list of dictionaries"""
+        print(f"\n==== CREATING LOAN RECORDS ====\nCreating {len(records)} loan records for dataset {dataset_id}")
+        
+        # Ensure dataset_id is a UUID object
+        if isinstance(dataset_id, str):
+            dataset_id = UUID(dataset_id)
+            
+        print(f"Dataset ID type: {type(dataset_id)}")
+        print(f"Dataset ID: {dataset_id}")
+        
+        # Check if dataset exists
+        dataset_check = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+        print(f"Dataset exists in DB: {dataset_check is not None}")
+        if dataset_check:
+            print(f"Dataset name: {dataset_check.name}, ID: {dataset_check.id}")
+        else:
+            print("WARNING: Dataset does not exist in database!")
+            return []
+            
+        # Create a list to hold all successfully created records
+        db_records = []
+        
+        # Process records in small batches for better error handling
+        batch_size = 10
+        total_created = 0
+            'agreement_no': 'agreement_no',
+            
+            # Common variations of classification
+            'classification': 'classification',
+            'asset classification': 'classification',
+            'npa status': 'classification',
+            'write-off status': 'classification',
+            'npa write off': 'classification',
+            'npa/write off': 'classification',
+            'w/off': 'classification',
+            
+            # Common variations of principal_os_amt
+            'principal o/s': 'principal_os_amt',
+            'principal outstanding': 'principal_os_amt',
+            'outstanding principal': 'principal_os_amt',
+            'balance amount': 'principal_os_amt',
+            'pos amount': 'principal_os_amt',
+            'principal_os_amt': 'principal_os_amt',
+            
+            # Common variations of product_type
+            'product type': 'product_type',
+            'product': 'product_type',
+            'loan product': 'product_type',
+            'asset type': 'product_type',
+            'product_type': 'product_type',
+            
+            # Common variations of state
+            'state': 'state',
+            'customer state': 'state',
+            'property state': 'state',
+            'borrower state': 'state',
+            
+            # Common variations of DPD
+            'dpd': 'dpd_as_on_31st_jan_2025',
+            'dpd days': 'dpd_as_on_31st_jan_2025',
+            'days past due': 'dpd_as_on_31st_jan_2025',
+            'overdue days': 'dpd_as_on_31st_jan_2025',
+            'dpd_as_on_31st_jan_2025': 'dpd_as_on_31st_jan_2025',
+            
+            # Sanction date variations
+            'sanction_date': 'sanction_date',
+            'sanction date': 'sanction_date',
+            'date of sanction': 'sanction_date',
+            'sanctioned on': 'sanction_date',
+            'sanction_d_ate': 'sanction_date',
+            
+            # Date of NPA variations
+            'date_of_npa': 'date_of_npa',
+            'date of npa': 'date_of_npa',
+            'npa date': 'date_of_npa',
+            
+            # Date of Write-off variations
+            'date_of_write_off': 'date_of_woff',
+            'date of write off': 'date_of_woff',
+            'date of writ e.off': 'date_of_woff',
+            'write off date': 'date_of_woff',
+            'date_of_woff': 'date_of_woff',
+            
+            # LTV variations
+            'ltv': 'ltv_at_sanction',
+            'ltv at sanction': 'ltv_at_sanction',
+            'ltv_at_sanction': 'ltv_at_sanction',
+            'current ltv': 'ltv_at_sanction',
+            
+            # EMI paid variations
+            'no_of_emi_paid': 'no_of_emi_paid',
+            'no of emi paid': 'no_of_emi_paid',
+            'no of emi paid months': 'no_of_emi_paid',
+            'no_of_emi_paid_months': 'no_of_emi_paid',
+            'emi paid': 'no_of_emi_paid',
+            
+            # Legal status variations
+            'legal_status': 'legal_status',
+            'legal status': 'legal_status',
+            'arbitration status': 'legal_status',
+            'if action taken under s.138 of ni act': 'legal_status',
+            
+            # Post NPA collection variations
+            'post_npa_collection': 'post_npa_collection',
+            'post npa collection': 'post_npa_collection',
+            'post npa coll': 'post_npa_collection',
+            'post_npa_coll': 'post_npa_collection',
+            'npa collection': 'post_npa_collection',
+            
+            # Post write-off collection variations
+            'post_woff_collection': 'post_woff_collection',
+            'post w off collection': 'post_woff_collection',
+            'post write off collection': 'post_woff_collection',
+            'write off collection': 'post_woff_collection',
+            
+            # Other fields
+            'sec 17 order date.1': 'sec_17_order_date',
+            'sec 9 order date.1': 'sec_9_order_date',
+            'arbitration_status': 'arbitration_status'
+        }
+        
+        # Define known model fields for LoanRecord
+        known_fields = {
+            'id', 'dataset_id', 'agreement_no', 'principal_os_amt', 'dpd_as_on_31st_jan_2025',
+            'classification', 'product_type', 'customer_name', 'state', 'bureau_score',
+            'total_collection', 'created_at', 'updated_at', 'loan_id', 'disbursement_date',
+            'pos_amount', 'disbursement_amount', 'dpd', 'status', 'has_validation_errors', 
+            'validation_error_types', 'additional_fields', 'post_npa_collection', 'post_woff_collection', 
+            'sec_17_order_date', 'sec_9_order_date', 'arbitration_status', 'ni_act_status'
+        }
+        
+        # Define a proper JSON serializer function
+        def json_serialize(obj):
+            """Custom JSON serializer for objects not serializable by default json code"""
+            try:
+                # Handle UUID objects
+                if isinstance(obj, (UUID, uuid.UUID)):
+                    return str(obj)
+                # Handle datetime objects
+                elif isinstance(obj, datetime.datetime):
+                    return obj.isoformat()
+                # Handle time objects
+                elif isinstance(obj, datetime.time):
+                    return obj.strftime('%H:%M:%S')
+                # Handle date objects
+                elif isinstance(obj, datetime.date):
+                    return obj.isoformat()
+                # Handle pandas Timestamp objects
+                elif hasattr(obj, 'isoformat'):
+                    return obj.isoformat()
+                # Handle basic types that don't need conversion
+                elif isinstance(obj, (str, int, float, bool, type(None))):
+                    return obj
+                # Convert anything else to string
+                else:
+                    return str(obj)
+            except Exception as e:
+                print(f"Error serializing object {type(obj)}: {e}")
+                # Return a safe fallback
+                return str(obj)
+        
+        # Create simplified records for direct insertion
+        simplified_records = []
+        
+        for i, record in enumerate(records):
+            try:
+                # Create a simplified record with just the essential fields
+                simple_record = {
+                    'dataset_id': dataset_id,
+                    'agreement_no': f"LOAN-{i+1:04d}",  # Default value
+                    'principal_os_amt': 0,
+                    'dpd_as_on_31st_jan_2025': 0,
+                    'classification': 'Standard',
+                    'additional_fields': '{}'
+                }
+                
+                # Store all original fields in additional_fields
+                additional_fields = {}
+                for key, value in record.items():
+                    if key is not None and value is not None:
+                        additional_fields[key] = value
+                
+                # Try to map important fields from the Excel file
+                for key, value in record.items():
+                    if key is None or value is None:
+                        continue
+                        
+                    key_lower = key.lower()
+                    
+                    # Map loan number/agreement number
+                    if key_lower in ['loan no.', 'loan no', 'agreement no', 'loan id', 'agreement number'] or 'loan' in key_lower or 'agreement' in key_lower:
+                        # Don't use 'Y' as an agreement number
+                        if str(value).strip().upper() != 'Y':
+                            simple_record['agreement_no'] = str(value)
+                        # If we have a column that might be the actual agreement number, check it
+                        elif '3019' in str(record.get('Loan No.', '')) or '3019' in str(record.get('Agreement No', '')):
+                            if 'Loan No.' in record:
+                                simple_record['agreement_no'] = str(record['Loan No.'])
+                            elif 'Agreement No' in record:
+                                simple_record['agreement_no'] = str(record['Agreement No'])
+                        # Look for any key that might contain the actual agreement number
+                        else:
+                            for k, v in record.items():
+                                if k and v and isinstance(v, str) and len(v) > 5 and any(c.isdigit() for c in v):
+                                    if '3019' in v:
+                                        simple_record['agreement_no'] = str(v)
+                                        break
+                    
+                    # Map principal outstanding amount
+                    elif key_lower in ['principal o/s', 'principal outstanding', 'pos amount'] or 'principal' in key_lower:
+                        try:
+                            simple_record['principal_os_amt'] = float(value)
+                        except (ValueError, TypeError):
+                            simple_record['principal_os_amt'] = 0
+                    
+                    # Map DPD - Simple approach
+                    elif key_lower in ['dpd', 'days past due', 'overdue days'] or 'dpd' in key_lower:
+                        try:
+                            # Store the original value
+                            if value is not None:
+                                additional_fields['original_dpd'] = value
+                                
+                            # If it's a numeric value, use it directly
+                            if isinstance(value, (int, float)):
+                                simple_record['dpd_as_on_31st_jan_2025'] = int(float(value))
+                            # If it's a string that can be converted to a number
+                            elif isinstance(value, str) and value.strip().replace('.', '', 1).isdigit():
+                                simple_record['dpd_as_on_31st_jan_2025'] = int(float(value))
+                            # If it's a string with numbers in it, extract the first number
+                            elif isinstance(value, str) and re.search(r'\d+', value):
+                                match = re.search(r'\d+', value)
+                                simple_record['dpd_as_on_31st_jan_2025'] = int(match.group())
+                            # Special case for write-offs
+                            elif isinstance(value, str) and ('w/off' in value.lower() or 'write-off' in value.lower()):
+                                simple_record['dpd_as_on_31st_jan_2025'] = 999
+                                simple_record['classification'] = 'Write-off'
+                        except (ValueError, TypeError) as e:
+                            # If we can't parse it, leave the default value
+                            pass
+                            
+                    # Map sanction date
+                    elif key_lower in ['sanction date', 'sanction_date', 'date of sanction', 'sanction_d_ate'] or 'sanction' in key_lower:
+                        try:
+                            # Store original value
+                            additional_fields['original_sanction_date'] = value
+                            
+                            # Handle different date formats
+                            if isinstance(value, (datetime.date, datetime.datetime)):
+                                simple_record['sanction_date'] = value.strftime('%Y-%m-%d')
+                            elif isinstance(value, str):
+                                # Try to parse the date string
+                                if '/' in value or '-' in value or '.' in value:
+                                    date_formats = ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%m-%d-%Y', '%d.%m.%Y', '%m.%d.%Y']
+                                    for fmt in date_formats:
+                                        try:
+                                            parsed_date = datetime.datetime.strptime(value, fmt).date()
+                                            simple_record['sanction_date'] = parsed_date.strftime('%Y-%m-%d')
+                                            break
+                                        except ValueError:
+                                            continue
+                        except Exception as e:
+                            # Keep the original value
+                            simple_record['sanction_date'] = str(value)
+                            
+                    # Map date of NPA
+                    elif key_lower in ['date of npa', 'date_of_npa', 'npa date'] or ('npa' in key_lower and 'date' in key_lower):
+                        try:
+                            # Store original value
+                            additional_fields['original_date_of_npa'] = value
+                            
+                            # Handle different date formats
+                            if isinstance(value, (datetime.date, datetime.datetime)):
+                                simple_record['date_of_npa'] = value.strftime('%Y-%m-%d')
+                            elif isinstance(value, str):
+                                # Try to parse the date string
+                                if '/' in value or '-' in value or '.' in value:
+                                    date_formats = ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%m-%d-%Y', '%d.%m.%Y', '%m.%d.%Y']
+                                    for fmt in date_formats:
+                                        try:
+                                            parsed_date = datetime.datetime.strptime(value, fmt).date()
+                                            simple_record['date_of_npa'] = parsed_date.strftime('%Y-%m-%d')
+                                            break
+                                        except ValueError:
+                                            continue
+                        except Exception as e:
+                            # Keep the original value
+                            simple_record['date_of_npa'] = str(value)
+                            
+                    # Map date of write-off
+                    elif key_lower in ['date of write off', 'date_of_write_off', 'date of writ e.off', 'date_of_woff', 'write off date'] or ('write' in key_lower and 'date' in key_lower):
+                        try:
+                            # Store original value
+                            additional_fields['original_date_of_woff'] = value
+                            
+                            # Handle different date formats
+                            if isinstance(value, (datetime.date, datetime.datetime)):
+                                simple_record['date_of_woff'] = value.strftime('%Y-%m-%d')
+                            elif isinstance(value, str):
+                                # Try to parse the date string
+                                if '/' in value or '-' in value or '.' in value:
+                                    date_formats = ['%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%m-%d-%Y', '%d.%m.%Y', '%m.%d.%Y']
+                                    for fmt in date_formats:
+                                        try:
+                                            parsed_date = datetime.datetime.strptime(value, fmt).date()
+                                            simple_record['date_of_woff'] = parsed_date.strftime('%Y-%m-%d')
+                                            break
+                                        except ValueError:
+                                            continue
+                        except Exception as e:
+                            # Keep the original value
+                            simple_record['date_of_woff'] = str(value)
+                            
+                    # Map LTV
+                    elif key_lower in ['ltv', 'ltv at sanction', 'ltv_at_sanction', 'current ltv'] or 'ltv' in key_lower:
+                        try:
+                            if isinstance(value, (int, float)):
+                                simple_record['ltv_at_sanction'] = float(value)
+                            elif isinstance(value, str) and value.strip().replace('.', '', 1).isdigit():
+                                simple_record['ltv_at_sanction'] = float(value)
+                        except (ValueError, TypeError):
+                            pass
+                            
+                    # Map EMI paid
+                    elif key_lower in ['no of emi paid', 'no_of_emi_paid', 'no of emi paid months', 'no_of_emi_paid_months', 'emi paid'] or ('emi' in key_lower and 'paid' in key_lower):
+                        try:
+                            if isinstance(value, (int, float)):
+                                simple_record['no_of_emi_paid'] = int(value)
+                            elif isinstance(value, str) and value.strip().isdigit():
+                                simple_record['no_of_emi_paid'] = int(value)
+                        except (ValueError, TypeError):
+                            pass
+                            
+                    # Map legal status
+                    elif key_lower in ['legal status', 'legal_status', 'arbitration status'] or 'legal' in key_lower:
+                        simple_record['legal_status'] = str(value)
+                        
+                    # Map post NPA collection
+                    elif key_lower in ['post npa collection', 'post_npa_collection', 'npa collection', 'post npa coll'] or ('npa' in key_lower and 'coll' in key_lower):
+                        try:
+                            if isinstance(value, (int, float)):
+                                simple_record['post_npa_collection'] = float(value)
+                            elif isinstance(value, str) and value.strip().replace('.', '', 1).isdigit():
+                                simple_record['post_npa_collection'] = float(value)
+                        except (ValueError, TypeError):
+                            pass
+                            
+                    # Map product type
+                    elif key_lower in ['product type', 'product', 'loan product'] or 'product' in key_lower:
+                        simple_record['product_type'] = str(value)
+                    
+                    # Map state
+                    elif key_lower in ['state', 'customer state', 'property state'] or 'state' in key_lower:
+                        simple_record['state'] = str(value)
+                # Store all original fields in additional_fields JSON
+                simple_record['additional_fields'] = json.dumps(additional_fields, default=json_serialize)
+                
+                # Add to simplified records
+                simplified_records.append(simple_record)
+                success_count += 1
+                
+                # Debug the first few records
+                if i < 3:
+                    print(f"Record {i+1} simplified fields:")
+                    for key, value in simple_record.items():
+                        if key != 'additional_fields':  # Skip the large JSON field
+                            print(f"  {key}: {value}")
+                
+            except Exception as e:
+                error_count += 1
+                print(f"Error creating record {i+1}: {e}")
+                continue
+            
+            # Print progress for large datasets
+            if (i+1) % 100 == 0:
+                print(f"Processed {i+1} records so far, {success_count} successful, {error_count} errors")
+        
+        print(f"Successfully created {success_count} records, encountered {error_count} errors")
+        
+        if simplified_records:  # Only proceed if we have valid records
+            try:
+                print(f"Creating {len(simplified_records)} records directly in database")
+                
+                # Use bulk insert for better performance
+                try:
+                    # Create records in batches
+                    batch_size = 10  # Smaller batch size for better reliability
+                    total_created = 0
+                    all_db_records = []
+                    
+                    print(f"\n==== DETAILED DEBUG: RECORD CREATION ====")
+                    print(f"Dataset ID: {dataset_id} (type: {type(dataset_id)})")
+                    print(f"Total records to create: {len(simplified_records)}")
+                    print(f"Sample record fields: {list(simplified_records[0].keys()) if simplified_records else 'No records'}")
+                    
+                    # Check if dataset exists
+                    dataset_check = db.query(models.Dataset).filter(models.Dataset.id == dataset_id).first()
+                    print(f"Dataset exists in DB: {dataset_check is not None}")
+                    if dataset_check:
+                        print(f"Dataset name: {dataset_check.name}, ID: {dataset_check.id}")
+                    
+                    try:
+                        # Try a simple direct insert first to test database connection
+                        if simplified_records:
+                            test_record = simplified_records[0].copy()
+                            if isinstance(test_record['dataset_id'], str):
+                                test_record['dataset_id'] = UUID(test_record['dataset_id'])
+                            
+                            print(f"Testing single record insert with fields: {test_record.keys()}")
+                            db_test_record = models.LoanRecord(**test_record)
+                            db.add(db_test_record)
+                            db.commit()
+                            print(f"Test record created successfully with ID: {db_test_record.id}")
+                            db.refresh(db_test_record)
+                            
+                            # Check if it actually exists in the database
+                            check_record = db.query(models.LoanRecord).filter(models.LoanRecord.id == db_test_record.id).first()
+                            print(f"Test record exists in DB: {check_record is not None}")
+                            
+                            # Start with the second record since we already created the first one
+                            simplified_records = simplified_records[1:]
+                            all_db_records.append(db_test_record)
+                            total_created += 1
+                    except Exception as test_error:
+                        db.rollback()
+                        print(f"Error creating test record: {test_error}")
+                        print(f"Error type: {type(test_error)}")
+                        import traceback
+                        traceback.print_exc()
+                    
+                    # Process the remaining records in small batches
+                    for i in range(0, len(simplified_records), batch_size):
+                        batch = simplified_records[i:i+batch_size]
+                        print(f"Processing batch {i//batch_size + 1} with {len(batch)} records")
+                        
+                        # Create LoanRecord objects
+                        db_records = []
+                        for record_data in batch:
+                            try:
+                                # Ensure dataset_id is a UUID object
+                                if isinstance(record_data['dataset_id'], str):
+                                    record_data['dataset_id'] = UUID(record_data['dataset_id'])
+                                
+                                # Create the record
+                                db_record = models.LoanRecord(**record_data)
+                                db_records.append(db_record)
+                            except Exception as record_error:
+                                print(f"Error creating record object: {record_error}")
+                                print(f"Record data: {list(record_data.keys())[:10]}")
+                        
+                        if not db_records:
+                            print(f"No valid records in batch {i//batch_size + 1}, skipping")
+                            continue
+                        
+                        # Add all records in this batch
+                        db.add_all(db_records)
+                        try:
+                            db.commit()
+                            all_db_records.extend(db_records)
+                            total_created += len(db_records)
+                            print(f"Committed batch {i//batch_size + 1}, total created: {total_created}")
+                        except Exception as commit_error:
+                            db.rollback()
+                            print(f"Error committing batch {i//batch_size + 1}: {commit_error}")
+                            print(f"Error type: {type(commit_error)}")
+                            
+                            # Try one by one
+                            print("Trying individual record creation...")
+                            for j, record_data in enumerate(batch):
+                                try:
+                                    if isinstance(record_data['dataset_id'], str):
+                                        record_data['dataset_id'] = UUID(record_data['dataset_id'])
+                                    db_record = models.LoanRecord(**record_data)
+                                    db.add(db_record)
+                                    db.commit()
+                                    db.refresh(db_record)
+                                    all_db_records.append(db_record)
+                                    total_created += 1
+                                    if j % 5 == 0:
+                                        print(f"Created {j+1} individual records in current batch")
+                                except Exception as e:
+                                    db.rollback()
+                                    print(f"Error with individual record {i+j}: {e}")
+                    
+                    # Return all created records
+                    db_records = all_db_records
+                    
+                    # Verify records were created
+                    verification_count = db.query(models.LoanRecord).filter(models.LoanRecord.dataset_id == dataset_id).count()
+                    print(f"Verification: {verification_count} records exist in database for dataset {dataset_id}")
+                    
+                    return db_records
+                    
+                except Exception as batch_error:
+                    db.rollback()
+                    print(f"Error in batch insert: {batch_error}")
+                    print("Falling back to individual inserts...")
+                    
+                    # Fallback: insert records one by one
+                    created_records = []
+                    for i, record in enumerate(simplified_records):
+                        try:
+                            db_record = models.LoanRecord(**record)
+                            db.add(db_record)
+                            db.commit()
+                            created_records.append(db_record)
+                            
+                            if (i+1) % 10 == 0:
+                                print(f"Created {i+1} records individually")
+                                
+                        except Exception as record_error:
+                            db.rollback()
+                            print(f"Error with record {i+1}: {record_error}")
+                    
+                    print(f"Created {len(created_records)} records individually")
+                    return created_records
+                    
+            except Exception as e:
+                db.rollback()
+                print(f"Critical error during record creation: {e}")
+                import traceback
+                traceback.print_exc()
+                raise e
+        else:
+            print("No valid records to commit")
+            return []
+
+# Instantiate CRUD classes
+user_crud = CRUDUser()
+dataset_crud = CRUDDataset()
+loan_record_crud = CRUDLoanRecord()

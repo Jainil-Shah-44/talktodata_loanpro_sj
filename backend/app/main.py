@@ -1,0 +1,39 @@
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.api import datasets, auth, chat, pool_selection, filter_management, upload_profile, bucket_summary # added hvb @ 15/11/2025 upload_profile,added hvb @ 26/11/2025 bucket_summary
+from app.api import fields_management
+from app.core.database import engine
+from app.models import models, pool_selection as pool_models
+
+# Create database tables
+models.Base.metadata.create_all(bind=engine)
+
+app = FastAPI(title="TalkToData LoanPro API")
+
+# Enable CORS with detailed error information
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # For development, replace with specific origins in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["X-Process-Time", "X-API-Error"],
+)
+
+# Include routers
+app.include_router(datasets.router, prefix="/api/datasets", tags=["datasets"])
+app.include_router(auth.router, prefix="/api", tags=["authentication"])
+app.include_router(chat.router, prefix="/api/datasets", tags=["chat"])
+app.include_router(pool_selection.router, prefix="/api/pool-selection", tags=["pool-selection"])
+
+# added hvb @ 26/10/2025 for adding filter-crud ep.
+app.include_router(filter_management.router, prefix="/api/filters", tags=["filters"])
+
+app.include_router(upload_profile.router, prefix="/api/upload-profile", tags=["upload-profile"]) # added hvb @ 15/11/2025
+app.include_router(bucket_summary.router, prefix="/api/data-bucket", tags=["bucket-summary"]) # added hvb @ 15/11/2025
+
+app.include_router(fields_management.router, prefix="/api/fields-mgmt", tags=["fields-management"])
+
+@app.get("/")
+def read_root():
+    return {"message": "Welcome to TalkToData LoanPro API"}

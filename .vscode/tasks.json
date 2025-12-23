@@ -1,0 +1,72 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start Backend Server (Development)",
+      "type": "shell",
+      "command": "cd ${workspaceFolder}/backend && uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "group": "servers"
+      },
+      "problemMatcher": [],
+      "isBackground": true
+    },
+    {
+      "label": "Start Frontend Server (Development)",
+      "type": "shell",
+      "command": "cd ${workspaceFolder}/frontend && npm run dev",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new",
+        "group": "servers"
+      },
+      "problemMatcher": [],
+      "isBackground": true
+    },
+    {
+      "label": "Start Both Servers (Development)",
+      "dependsOrder": "parallel",
+      "dependsOn": [
+        "Start Backend Server (Development)",
+        "Start Frontend Server (Development)"
+      ],
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      }
+    },
+    {
+      "label": "Build Frontend",
+      "type": "shell",
+      "command": "cd ${workspaceFolder}/frontend && npm run build",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Install Backend Dependencies",
+      "type": "shell",
+      "command": "cd ${workspaceFolder}/backend && pip install -r requirements.txt",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Install Frontend Dependencies",
+      "type": "shell",
+      "command": "cd ${workspaceFolder}/frontend && npm install",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      },
+      "problemMatcher": []
+    }
+  ]
+}
