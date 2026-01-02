@@ -2137,6 +2137,154 @@ def get_validations(dataset_id: str, db: Session = Depends(get_db)):
     )
     ).count()
 
+    # 11. calculate avg ticket size
+    avg_ticket_data = db.query(
+        func.coalesce(func.sum(models.LoanRecord.principal_os_amt), 0),
+        func.count(models.LoanRecord.id)
+    ).filter(
+        models.LoanRecord.dataset_id == dataset_uuid,
+        models.LoanRecord.principal_os_amt.isnot(None)
+    ).one()
+
+    total_pos, account_count = avg_ticket_data
+
+    average_ticket_size = (
+        float(total_pos) / account_count
+        if account_count > 0 else 0
+    ) 
+    average_ticket_size = round(average_ticket_size, 2)
+
+    # 12 POS rundown %
+    pos_rundown_data = db.query(
+        func.coalesce(func.sum(models.LoanRecord.disbursement_amount), 0),
+        func.coalesce(func.sum(models.LoanRecord.principal_os_amt), 0)
+    ).filter(
+        models.LoanRecord.dataset_id == dataset_uuid,
+        models.LoanRecord.disbursement_amount.isnot(None),
+        models.LoanRecord.principal_os_amt.isnot(None)
+    ).one()
+
+    total_disbursement, total_pos = pos_rundown_data
+
+    pos_rundown_pct = (
+        (float(total_disbursement) - float(total_pos)) / float(total_disbursement)
+        if total_disbursement > 0 else 0
+    )   
+    pos_rundown_pct = round(pos_rundown_pct * 100, 2)
+
+    # 13 Invalid DPD for write-off accounts
+
+    writeoff_dpd_invalid_count = db.query(models.LoanRecord).filter(
+    models.LoanRecord.dataset_id == dataset_uuid,
+
+    # Valid write-off definition
+    models.LoanRecord.date_of_woff.isnot(None),
+    models.LoanRecord.date_of_npa.isnot(None),
+    models.LoanRecord.date_of_woff > models.LoanRecord.date_of_npa,
+
+    # Invalid DPD condition
+    or_(
+        models.LoanRecord.dpd.is_(None),
+        models.LoanRecord.dpd == 0
+    )
+    ).count()
+
+    # 14 DPD Mismatch for Write-off Accounts
+    writeoff_dpd_mismatch_count = db.query(models.LoanRecord).filter(
+    models.LoanRecord.dataset_id == dataset_uuid,
+
+    # Valid write-off definition
+    models.LoanRecord.date_of_woff.isnot(None),
+    models.LoanRecord.date_of_npa.isnot(None),
+    models.LoanRecord.date_of_woff > models.LoanRecord.date_of_npa,
+
+    # DPD mismatch condition
+    or_(
+        models.LoanRecord.dpd.is_(None),
+        models.LoanRecord.dpd < 90
+    )
+    ).count()
+
+    # 15 EMI paid vs COllection mismatch
+    emi_paid_collection_mismatch_count = 0
+
+    records = db.query(models.LoanRecord).filter(
+    models.LoanRecord.dataset_id == dataset_uuid,
+    models.LoanRecord.emi_amount.isnot(None),
+    models.LoanRecord.emi_amount > 0,
+    models.LoanRecord.emi_paid_months.isnot(None),
+    models.LoanRecord.total_collection_since_inception.isnot(None)
+    ).all()
+
+    for r in records:
+        expected_emi_paid = float(r.total_collection_since_inception) / float(r.emi_amount)
+
+        if abs(expected_emi_paid - float(r.emi_paid_months)) > 1:
+            emi_paid_collection_mismatch_count += 1
+
+    # 15 tenor months mismatch
+    tenor_mismatch_count = 0
+
+    records = db.query(models.LoanRecord).filter(
+        models.LoanRecord.dataset_id == dataset_uuid,
+        models.LoanRecord.emi_paid_months.isnot(None),
+        models.LoanRecord.balance_tenor_months.isnot(None),
+        models.LoanRecord.current_tenor_months.isnot(None)
+    ).all()
+
+    for r in records:
+        if abs(
+            (r.emi_paid_months + r.balance_tenor_months)
+            - r.current_tenor_months
+        ) > 1:
+            tenor_mismatch_count += 1
+
+    # 16 Calculated EMI = Stored EMI -- emi calculator mismatch count
+    emi_calculator_mismatch_count = 0
+
+    rows = db.query(models.LoanRecord).filter(
+    models.LoanRecord.dataset_id == dataset_uuid,
+    models.LoanRecord.disbursement_amount.isnot(None),
+    models.LoanRecord.emi_amount.isnot(None),
+    models.LoanRecord.original_tenor_months.isnot(None),
+    models.LoanRecord.original_tenor_months > 0,
+    models.LoanRecord.roi_at_booking.isnot(None)
+    ).all()
+
+    for r in rows:
+        try:
+            P = float(r.disbursement_amount)
+            emi_actual = float(r.emi_amount)
+            n = int(r.original_tenor_months)
+            annual_roi = float(r.roi_at_booking)
+
+            if P <= 0 or emi_actual <= 0 or n <= 0 or annual_roi <= 0:
+                continue
+
+            r_monthly = annual_roi / 12 / 100
+
+            emi_calculated = (
+                P * r_monthly * (1 + r_monthly) ** n
+            ) / ((1 + r_monthly) ** n - 1)
+
+            deviation_pct = abs(emi_calculated - emi_actual) / emi_actual * 100
+
+            if deviation_pct > 2:
+                emi_calculator_mismatch_count += 1
+
+        except Exception:
+            continue
+
+    # 17 NPA-DPD rossing mismatch
+    npa_dpd_crossing_mismatch_count = db.query(models.LoanRecord).filter(
+        models.LoanRecord.dataset_id == dataset_uuid,
+        models.LoanRecord.date_of_npa.isnot(None),
+        or_(
+            models.LoanRecord.dpd_as_on_31st_jan_2025.is_(None),
+            models.LoanRecord.dpd_as_on_31st_jan_2025 < 90
+        )
+    ).count()
+
 
     return [
         {"id": "dpd_gt_0", "name": "DPD should be more than 0 days", "failed_count": dpd_gt_0},
@@ -2148,7 +2296,15 @@ def get_validations(dataset_id: str, db: Session = Depends(get_db)):
         {"id": "min_pos_amount", "name": "Check minimum POS Amount (< Rs 1000)", "failed_count": min_pos_amount},
         {"id": "tos_calc", "name": "Check Total Outstanding (TOS) Calculation(POS + Int. overdue) ", "failed_count": tos_calc},
         {"id": "negative_collections", "name": "Collections of negative amounts", "failed_count": negative_collections},
-        {"id": "npa_le_woff","name": "NPA Date less than Write-off Date","failed_count": npa_date_le_woff_date}
+        {"id": "npa_le_woff","name": "NPA Date less than Write-off Date","failed_count": npa_date_le_woff_date},
+        {"id": "average_ticket_size","name": "Average Ticket Size","failed_count": average_ticket_size},
+        {"id": "POS rundown %","name": "POS rundown %","failed_count": f"{pos_rundown_pct}%"},
+        {"id": "writeoff_dpd_invalid_count","name": "Invalid DPD for write-off accounts","failed_count": writeoff_dpd_invalid_count},
+        {"id": "writeoff_dpd_mismatch_count","name": "DPD Mismatch for Write-off Accounts","failed_count": writeoff_dpd_mismatch_count},
+        {"id": "emi_paid_collection_mismatch_count","name": "EMI Paid mismatch with Total Collection","failed_count": emi_paid_collection_mismatch_count},
+        {"id": "tenor_mismatch_count","name": "Tenor Months Mismatch Count (EMI paid + Tenor = Current)","failed_count": tenor_mismatch_count},
+        {"id": "emi_calculator_mismatch_count","name": "EMI calulated vs EMI stored mismatch","failed_count": emi_calculator_mismatch_count},
+        {"id": "npa_dpd_crossing_mismatch_count","name": "NPA Date mismatch with DPD crossing 90 days","failed_count": npa_dpd_crossing_mismatch_count}
     ]
 
 @router.get("/{dataset_id}/validation-errors/{validation_id}")
@@ -2222,7 +2378,175 @@ def get_validation_errors(dataset_id: str, validation_id: str, db: Session = Dep
             models.LoanRecord.date_of_npa >= models.LoanRecord.date_of_woff
         )
         )
+    
+    elif validation_id in ("average_ticket_size", "pos_rundown_pct"):
+        return []
+    
+    elif validation_id == "writeoff_dpd_invalid_count":
+        query = query.filter(
+            models.LoanRecord.date_of_woff.isnot(None),
+            models.LoanRecord.date_of_npa.isnot(None),
+            models.LoanRecord.date_of_woff > models.LoanRecord.date_of_npa,
+            or_(
+                models.LoanRecord.dpd.is_(None),
+                models.LoanRecord.dpd == 0
+            )
+        )
 
+    elif validation_id == "writeoff_dpd_mismatch_count":
+        query = query.filter(
+            models.LoanRecord.date_of_woff.isnot(None),
+            models.LoanRecord.date_of_npa.isnot(None),
+            models.LoanRecord.date_of_woff > models.LoanRecord.date_of_npa,
+            or_(
+                models.LoanRecord.dpd.is_(None),
+                models.LoanRecord.dpd < 90
+            )
+        )
+
+    elif validation_id == "emi_paid_collection_mismatch_count":
+        records = []
+
+        rows = db.query(models.LoanRecord).filter(
+            models.LoanRecord.dataset_id == dataset_uuid,
+            models.LoanRecord.emi_amount.isnot(None),
+            models.LoanRecord.emi_amount > 0,
+            models.LoanRecord.emi_paid_months.isnot(None),
+            models.LoanRecord.total_collection_since_inception.isnot(None)
+        ).all()
+
+        for r in rows:
+            expected_emi_paid = float(r.total_collection_since_inception) / float(r.emi_amount)
+
+            if abs(expected_emi_paid - float(r.emi_paid_months)) > 1:
+                records.append(r)
+
+        return [
+            {
+                "Loan No.": r.agreement_no,
+                "DPD": r.dpd_as_on_31st_jan_2025,
+                "Principal O/S": r.principal_os_amt,
+                "Disbursement": getattr(r, 'disbursement_amount', None),
+                "NPA Date": r.date_of_npa,
+                "Write-off Date": r.date_of_woff,
+                "Classification": r.classification,
+                "EMI Amount": r.emi_amount,
+                "EMI Months" : r.emi_paid_months,
+                "Total Collection" : r.total_collection_since_inception
+            }
+            for r in records
+        ]
+    
+    elif validation_id == "tenor_mismatch_count":
+        records = []
+
+        rows = db.query(models.LoanRecord).filter(
+            models.LoanRecord.dataset_id == dataset_uuid,
+            models.LoanRecord.emi_paid_months.isnot(None),
+            models.LoanRecord.balance_tenor_months.isnot(None),
+            models.LoanRecord.current_tenor_months.isnot(None)
+        ).all()
+
+        for r in rows:
+            if abs(
+                (r.emi_paid_months + r.balance_tenor_months)
+                - r.current_tenor_months
+            ) > 1:
+                records.append(r)
+
+        return [
+            {
+                "Loan No.": r.agreement_no,
+                "DPD": r.dpd_as_on_31st_jan_2025,
+                "Principal O/S": r.principal_os_amt,
+                "Disbursement": getattr(r, 'disbursement_amount', None),
+                "NPA Date": r.date_of_npa,
+                "Write-off Date": r.date_of_woff,
+                "Classification": r.classification,
+            }
+            for r in records
+        ]
+
+
+
+    elif validation_id == "emi_calculator_mismatch_count":
+        records = []
+
+        rows = db.query(models.LoanRecord).filter(
+            models.LoanRecord.dataset_id == dataset_uuid,
+            models.LoanRecord.disbursement_amount.isnot(None),
+            models.LoanRecord.emi_amount.isnot(None),
+            models.LoanRecord.original_tenor_months.isnot(None),
+            models.LoanRecord.original_tenor_months > 0,
+            models.LoanRecord.roi_at_booking.isnot(None)
+        ).all()
+
+        for r in rows:
+            try:
+                P = float(r.disbursement_amount)
+                emi_actual = float(r.emi_amount)
+                n = int(r.original_tenor_months)
+                annual_roi = float(r.roi_at_booking)
+
+                if P <= 0 or emi_actual <= 0 or n <= 0 or annual_roi <= 0:
+                    continue
+
+                r_monthly = annual_roi / 12 / 100
+
+                emi_calculated = (
+                    P * r_monthly * (1 + r_monthly) ** n
+                ) / ((1 + r_monthly) ** n - 1)
+
+                deviation_pct = abs(emi_calculated - emi_actual) / emi_actual * 100
+
+                if deviation_pct > 2:
+                    records.append(r)
+
+            except Exception:
+                continue
+
+        return [
+            {
+                "Loan No.": r.agreement_no,
+                "DPD": r.dpd_as_on_31st_jan_2025,
+                "Principal O/S": r.principal_os_amt,
+                "Disbursement": r.disbursement_amount,
+                "EMI Amount": r.emi_amount,
+                "Tenor (Months)": r.original_tenor_months,
+                "ROI": r.roi_at_booking,
+                "Classification": r.classification,
+            }
+            for r in records
+        ]
+
+    elif validation_id == "npa_dpd_crossing_mismatch_count":
+        records = []
+
+        rows = db.query(models.LoanRecord).filter(
+            models.LoanRecord.dataset_id == dataset_uuid,
+            models.LoanRecord.date_of_npa.isnot(None)
+        ).all()
+
+        for r in rows:
+            # If NPA date exists, DPD must be >= 90
+            if r.dpd_as_on_31st_jan_2025 is None or r.dpd_as_on_31st_jan_2025 < 90:
+                records.append(r)
+
+        return [
+            {
+                "Loan No.": r.agreement_no,
+                "DPD": r.dpd_as_on_31st_jan_2025,
+                "Principal O/S": r.principal_os_amt,
+                "Disbursement": getattr(r, "disbursement_amount", None),
+                "NPA Date": r.date_of_npa,
+                "Write-off Date": r.date_of_woff,
+                "Classification": r.classification,
+            }
+            for r in records
+        ]
+
+
+       
     else:
         return []
 

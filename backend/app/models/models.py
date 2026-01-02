@@ -133,9 +133,22 @@ class LoanRecord(Base):
     # Validation status
     has_validation_errors = Column(Boolean, default=False)
     validation_error_types = Column(JSONB)
+
+     #EMI amount calculation
+    original_tenor_months = Column(Integer)
+    current_tenor_months = Column(Integer)
+    balance_tenor_months = Column(Integer)
+
+    emi_amount = Column(Numeric)
+    emi_paid_months = Column(Integer)
+
+    total_collection_since_inception = Column(Numeric)
+    roi_at_booking = Column(Numeric)
     
     # Store any additional fields not mapped to columns
     additional_fields = Column(JSONB)
+
+    
 
     # Added hvb @ 27/11/2025 new fields added for summary
     city = Column(String(150))
