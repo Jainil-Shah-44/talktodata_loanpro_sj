@@ -114,21 +114,26 @@ const handleExportExcel = () => {
           <Table withTableBorder withColumnBorders>
             <thead>
               <tr>
-                {Object.keys(failedRecords[0] || {}).slice(0, 6).map((col) => (
+                {Object.keys(failedRecords[0]).map((col) => (
                   <th key={col}>{col}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {failedRecords.map((rec, idx) => (
-                <tr key={rec.id || idx}>
-                  {Object.values(rec).slice(0, 6).map((val, i) => (
-                    <td key={i}>{val?.toString()}</td>
+                <tr key={idx}>
+                  {Object.keys(failedRecords[0]).map((col) => (
+                    <td key={col}>
+                      {rec[col] !== null && rec[col] !== undefined
+                        ? rec[col].toString()
+                        : "-"}
+                    </td>
                   ))}
                 </tr>
               ))}
             </tbody>
           </Table>
+
           </>
             
         )}

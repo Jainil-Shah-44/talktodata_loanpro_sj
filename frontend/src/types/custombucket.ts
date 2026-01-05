@@ -28,6 +28,8 @@ export type BucketRow = {
   count: number;
   POS: number;
   POS_Per: number;
+  disbursement_amount: number; 
+  POS_Rundown_Per: number;       
   Post_NPA_Coll: number;
   Post_W_Off_Coll: number;
   M6_Collection: number;

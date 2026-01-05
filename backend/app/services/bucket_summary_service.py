@@ -226,12 +226,15 @@ async def get_bucket_summary(db, config, filters: List[FilterCriteriaItem], data
             #func.sum(filtered_cte.c.amount).label("sum_amount"),
 
             func.sum(filtered_cte.c.principal_os_amt).label("POS"),
+            func.sum(filtered_cte.c.disbursement_amount).label("disbursement_amount"),
+
             func.sum(filtered_cte.c.post_npa_collection).label("Post_NPA_Coll"),
             func.sum(filtered_cte.c.post_woff_collection).label("Post_W_Off_Coll"),
 
             func.sum(filtered_cte.c.m6_collection).label("M6_Collection"),
             func.sum(filtered_cte.c.m12_collection).label("M12_Collection"),
             func.sum(filtered_cte.c.total_collection).label("total_collection")
+            
         )
         .select_from(filtered_cte)
         .group_by(case_expr)
@@ -254,6 +257,7 @@ async def get_bucket_summary(db, config, filters: List[FilterCriteriaItem], data
     totals = {
         "count": 0,
         "POS": 0,
+        "disbursement_amount": 0,
         "Post_NPA_Coll": 0,
         "Post_W_Off_Coll": 0,
         "M6_Collection": 0,
@@ -266,6 +270,7 @@ async def get_bucket_summary(db, config, filters: List[FilterCriteriaItem], data
 
         totals["count"] += r.count or 0
         totals["POS"] += r.POS or 0
+        totals["disbursement_amount"] += r.disbursement_amount or 0
         totals["Post_NPA_Coll"] += r.Post_NPA_Coll or 0
         totals["Post_W_Off_Coll"] += r.Post_W_Off_Coll or 0
         totals["M6_Collection"] += r.M6_Collection or 0
@@ -294,7 +299,9 @@ async def get_bucket_summary(db, config, filters: List[FilterCriteriaItem], data
                     "label": label,
                     "count": 0,
                     "POS": 0,
+                    "disbursement_amount": 0,
                     "POS_Per": 0,
+                    "POS_Rundown_Per": 0,
                     "Post_NPA_Coll": 0,
                     "Post_W_Off_Coll": 0,
                     "M6_Collection": 0,
@@ -304,12 +311,22 @@ async def get_bucket_summary(db, config, filters: List[FilterCriteriaItem], data
             else:
                 pos_val = r.POS or 0
                 pos_percent = (pos_val / totals["POS"] * 100) if totals["POS"] else 0
+                
+                disb = r.disbursement_amount or 0
+                pos_val = r.POS or 0
+
+                pos_rundown = (
+                    round((1 - (pos_val / disb)) * 100, 2)
+                    if disb > 0 else 0
+                )
 
                 summary_rows.append({
                     "label": label,
                     "count": r.count,
                     "POS": pos_val,
+                    "disbursement_amount": disb,
                     "POS_Per": round(pos_percent, 2),
+                    "POS_Rundown_Per": pos_rundown,                                    
                     "Post_NPA_Coll": r.Post_NPA_Coll,
                     "Post_W_Off_Coll": r.Post_W_Off_Coll,
                     "M6_Collection": r.M6_Collection,
@@ -323,6 +340,7 @@ async def get_bucket_summary(db, config, filters: List[FilterCriteriaItem], data
                 pos_val = r.POS or 0
                 pos_percent = (pos_val / totals["POS"] * 100) if totals["POS"] else 0
 
+                
                 summary_rows.append({
                     "label": r.bucket,
                     "count": r.count or 0,
@@ -356,11 +374,20 @@ async def get_bucket_summary(db, config, filters: List[FilterCriteriaItem], data
             )
 
     # ✅ Append total row ONLY ONCE
+    total_disb = totals["disbursement_amount"]
+    total_pos = totals["POS"]
+
+    total_pos_rundown = (
+        round((1 - (total_pos / total_disb)) * 100, 2)
+        if total_disb > 0 else 0
+    )
+
     summary_rows.append(
         {
             "label": "Total",
             **totals,
             "POS_Per": 100.0,
+            "POS_Rundown_Per": total_pos_rundown,
         }
     )
 

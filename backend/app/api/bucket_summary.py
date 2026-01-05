@@ -339,8 +339,10 @@ async def export_bucket_summaries(
         headers = [
             "Bucket Label",
             "Count",
-            "POS (₹ Cr)",
+            "Disbursement (₹ Cr)",
+            "POS (₹ Cr)",            
             "POS %",
+            "POS Rundown %", 
             "Post NPA Collection (₹ Cr)",
             "Post W-Off Collection (₹ Cr)",
             "M6 Collection (₹ Cr)",
@@ -357,16 +359,19 @@ async def export_bucket_summaries(
         # Data rows (STRICT ORDER)
         # ─────────────────────────────
         for bucket in summary["buckets"]:
-            ws.cell(row=row_idx, column=1, value=bucket["label"])
-            ws.cell(row=row_idx, column=2, value=int(bucket["count"]))
+            ws.cell(row=row_idx, column=1, value=bucket.get("label"))
+            ws.cell(row=row_idx, column=2, value=int(bucket.get("count", 0)))
 
-            ws.cell(row=row_idx, column=3, value=to_crore(bucket.get("POS")))
-            ws.cell(row=row_idx, column=4, value=(bucket.get("POS_Per", 0) / 100))  # numeric %
-            ws.cell(row=row_idx, column=5, value=to_crore(bucket.get("Post_NPA_Coll")))
-            ws.cell(row=row_idx, column=6, value=to_crore(bucket.get("Post_W_Off_Coll")))
-            ws.cell(row=row_idx, column=7, value=to_crore(bucket.get("M6_Collection")))
-            ws.cell(row=row_idx, column=8, value=to_crore(bucket.get("M12_Collection")))
-            ws.cell(row=row_idx, column=9, value=to_crore(bucket.get("total_collection")))
+            ws.cell(row=row_idx, column=3, value=to_crore(bucket.get("disbursement_amount")))
+            ws.cell(row=row_idx, column=4, value=to_crore(bucket.get("POS")))
+            ws.cell(row=row_idx, column=5, value=(bucket.get("POS_Per", 0) / 100))
+            ws.cell(row=row_idx, column=6, value=(bucket.get("POS_Rundown_Per", 0) / 100))
+
+            ws.cell(row=row_idx, column=7, value=to_crore(bucket.get("Post_NPA_Coll")))
+            ws.cell(row=row_idx, column=8, value=to_crore(bucket.get("Post_W_Off_Coll")))
+            ws.cell(row=row_idx, column=9, value=to_crore(bucket.get("M6_Collection")))
+            ws.cell(row=row_idx, column=10, value=to_crore(bucket.get("M12_Collection")))
+            ws.cell(row=row_idx, column=11, value=to_crore(bucket.get("total_collection")))
 
             row_idx += 1
 
@@ -378,10 +383,11 @@ async def export_bucket_summaries(
 
     # POS % formatting
     for r in range(1, row_idx):
-        ws.cell(row=r, column=4).number_format = "0.00%"
+        ws.cell(row=r, column=5).number_format = "0.00%"   # POS %
+        ws.cell(row=r, column=6).number_format = "0.00%"   # POS Rundown %
 
     # Auto-size columns
-    for col in range(1, 10):
+    for col in range(1, 12):
         ws.column_dimensions[get_column_letter(col)].width = 18
 
     # ----------------------------
@@ -393,9 +399,9 @@ async def export_bucket_summaries(
         ws.cell(row=r, column=4).number_format = "0.00%"
 
         # Monetary columns (₹ Cr) → 2 decimals
-        for c in [3, 5, 6, 7, 8, 9]:
+        for c in [3, 4, 7, 8, 9, 10, 11]:
             ws.cell(row=r, column=c).number_format = "#,##0.00"
-    
+
 
     buffer = BytesIO()
     wb.save(buffer)

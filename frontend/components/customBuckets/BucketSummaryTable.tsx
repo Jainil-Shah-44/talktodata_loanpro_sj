@@ -144,6 +144,8 @@ export function BucketSummaryTable({
             <Table.Th>Count</Table.Th>
             <Table.Th>POS</Table.Th>
             <Table.Th>POS %</Table.Th>
+            <Table.Th>Disbursement</Table.Th>
+            <Table.Th>POS Rundown %</Table.Th>
             <Table.Th>Post NPA</Table.Th>
             <Table.Th>Post W/OFF</Table.Th>
             <Table.Th>6M</Table.Th>
@@ -159,6 +161,8 @@ export function BucketSummaryTable({
               <Table.Td>{formatNumber(b.count)}</Table.Td>
               <Table.Td>{formatCrores(b.POS)}</Table.Td>
               <Table.Td>{formatPercent(b.POS_Per)}</Table.Td>
+              <Table.Td>{formatCrores(b.disbursement_amount)}</Table.Td>
+              <Table.Td>{formatPercent(b.POS_Rundown_Per)}</Table.Td>
               <Table.Td>{formatCrores(b.Post_NPA_Coll)}</Table.Td>
               <Table.Td>{formatCrores(b.Post_W_Off_Coll)}</Table.Td>
               <Table.Td>{formatCrores(b.M6_Collection)}</Table.Td>

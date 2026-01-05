@@ -2383,7 +2383,13 @@ def get_validation_errors(dataset_id: str, validation_id: str, db: Session = Dep
         return []
     
     elif validation_id == "writeoff_dpd_invalid_count":
-        query = query.filter(
+        from datetime import date
+
+        CUTOFF_DATE = date(2025, 1, 31)
+        records = []
+
+        rows = db.query(models.LoanRecord).filter(
+            models.LoanRecord.dataset_id == dataset_uuid,
             models.LoanRecord.date_of_woff.isnot(None),
             models.LoanRecord.date_of_npa.isnot(None),
             models.LoanRecord.date_of_woff > models.LoanRecord.date_of_npa,
@@ -2391,7 +2397,38 @@ def get_validation_errors(dataset_id: str, validation_id: str, db: Session = Dep
                 models.LoanRecord.dpd.is_(None),
                 models.LoanRecord.dpd == 0
             )
-        )
+        ).all()
+
+        for r in rows:
+            derived_dpd = "NA"
+
+            # Check if derived DPD can be calculated
+            if (
+                r.emi_amount is not None and r.emi_amount > 0
+                and r.post_npa_collection is not None
+                and r.date_of_npa is not None
+                #and CUTOFF_DATE <= r.date_of_npa
+            ):
+                try:
+                    G = (float(r.post_npa_collection) / float(r.emi_amount)) * 30
+                    days_diff = (CUTOFF_DATE - r.date_of_npa).days
+                    derived_dpd = round(days_diff + 90 - G, 2)
+                except Exception:
+                    derived_dpd = "NA"
+
+            records.append({
+                "Loan No.": r.agreement_no,
+                "Reported DPD": r.dpd,
+                "Derived DPD": derived_dpd,
+                "Post NPA Collection": r.post_npa_collection,
+                "EMI Amount": r.emi_amount,
+                "NPA Date": r.date_of_npa,
+                "Write-off Date": r.date_of_woff,
+                "Cutoff Date": CUTOFF_DATE,
+                "Classification": r.classification,
+            })
+
+        return records
 
     elif validation_id == "writeoff_dpd_mismatch_count":
         query = query.filter(
