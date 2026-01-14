@@ -6,6 +6,10 @@ from app.models.upload_profile import (
     SheetCleanup, SheetColumnMapping, SheetRelation
 )
 
+# NOTE:
+# SheetExtraColumn.source_col MUST ALWAYS be raw Excel column index
+# (not relative to cols_to_read)
+
 
 # ==========================================================
 #  METHOD 1: Build the EXACT mapping_config for Excel upload
@@ -42,8 +46,16 @@ def get_mapping_config(db: Session, profile_id: int,attach_col_config:bool):
         ).all()
 
         if extras:
-            sheet_entry["extra"] = [{ex.source_col: ex.target_name} for ex in extras]
-
+            #sheet_entry["extra"] = [{ex.source_col: ex.target_name} for ex in extras]
+            #added by Jainil @ 13/1/26 --
+            sheet_entry["timeseries"] = [
+                    {
+                        "source_col": ex.source_col,
+                        "target_name": ex.target_name
+                    }
+                    for ex in extras
+                ]
+            
         # ---- cleanup ----
         cleanup_obj = db.query(SheetCleanup).filter(
             SheetCleanup.sheet_id == sh.id
@@ -135,6 +147,21 @@ def get_database_config(db: Session, profile_id: int):
                 db_config[src] = [db_config[src], m.target_column]
             else:
                 db_config[src].append(m.target_column)
+
+    # commented by Jainil @9-1-25
+    # ✅ ALWAYS map extras into additional_fields
+
+    # Added by Jainil @ 13/1/26
+    #db_config["extra_data_json"] = "additional_fields"
+    db_config["additional_fields"] = "additional_fields"
+    db_config.update({
+        "post_npa_collection": "post_npa_collection",
+        "post_woff_collection": "post_woff_collection",
+        "m6_collection": "m6_collection",
+        "m12_collection": "m12_collection",
+        "total_collection": "total_collection",
+    })
+
 
     return db_config
 

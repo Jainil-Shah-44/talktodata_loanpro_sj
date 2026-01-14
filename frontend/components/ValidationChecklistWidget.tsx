@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
-import { Table, Button, Modal, Loader, Text } from '@mantine/core';
+import { Table, Button, Modal, Loader, Text, ScrollArea } from '@mantine/core';
 import { validationService } from '@/src/api/services';
 //Added by jainil, merged hvb @ 15/12/2025
 import * as XLSX from "xlsx";
 import { saveAs } from "file-saver";
+import type { CSSProperties } from "react";
 
 interface ValidationChecklistWidgetProps {
   datasetId: string;
@@ -14,6 +15,35 @@ interface ValidationRule {
   name: string;
   failed_count: number;
 }
+
+
+
+const stickyHeaderStyle: CSSProperties = {
+  position: "sticky",
+  top: 0, 
+  zIndex: 5,
+  background: "#fff",
+  boxShadow: "0 2px 4px rgba(0,0,0,0.08)",
+};
+
+const stickyFirstColumnHeaderStyle: CSSProperties = {
+  position: "sticky",
+  top: 0,
+  left: 0,
+  zIndex: 6, // highest
+  background: "#fff",
+  boxShadow: "2px 0 4px rgba(0,0,0,0.1)",
+};
+
+const stickyCellStyle: CSSProperties = {
+  position: "sticky",
+  left: 0,
+  zIndex: 3,
+  background: "#fff",
+  boxShadow: "2px 0 4px rgba(0,0,0,0.05)",
+};
+
+
 
 export function ValidationChecklistWidget({ datasetId }: ValidationChecklistWidgetProps) {
   const [validations, setValidations] = useState<ValidationRule[]>([]);
@@ -100,44 +130,86 @@ const handleExportExcel = () => {
           ))}
         </tbody>
       </Table>
-      <Modal opened={modalOpen} onClose={() => setModalOpen(false)} title={selectedValidation?.name} size="xl">
+      <Modal
+        opened={modalOpen}
+        onClose={() => setModalOpen(false)}
+        title={selectedValidation?.name}
+        size="90%"
+      >
         {recordsLoading ? (
           <Loader />
         ) : failedRecords.length === 0 ? (
           <Text>No failed records.</Text>
-        ) :  (
+        ) : (
           <>
-           <Button mb="md" onClick={handleExportExcel}>
+            <Button mb="md" onClick={handleExportExcel}>
               Export to Excel
-          </Button>
-          
-          <Table withTableBorder withColumnBorders>
-            <thead>
-              <tr>
-                {Object.keys(failedRecords[0]).map((col) => (
-                  <th key={col}>{col}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {failedRecords.map((rec, idx) => (
-                <tr key={idx}>
-                  {Object.keys(failedRecords[0]).map((col) => (
-                    <td key={col}>
-                      {rec[col] !== null && rec[col] !== undefined
-                        ? rec[col].toString()
-                        : "-"}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </Table>
+            </Button>
+
+            {/* Horizontal + Vertical Scroll */}
+            <ScrollArea
+                type="auto"
+                offsetScrollbars
+                scrollbarSize={8}
+                style={{
+                      height: "60vh",        // KEY FIX
+                      maxHeight: "60vh",
+                    }}
+              >
+                <Table
+                  withTableBorder
+                  withColumnBorders
+                  style={{
+                    width: "100%",
+                    minWidth: "max-content",
+                  }}
+                >
+                  <thead>
+                    <tr>
+                      {Object.keys(failedRecords[0]).map((col, colIndex) => (
+                        <th
+                            key={col}
+                            style={{
+                              padding: "8px",
+                              whiteSpace: "nowrap",
+                              ...(colIndex === 0
+                                ? stickyFirstColumnHeaderStyle // sticky corner
+                                : stickyHeaderStyle),               // sticky header
+                            }}
+                          >
+                            {col}
+                          </th>
+                      ))}
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    {failedRecords.map((rec, rowIndex) => (
+                      <tr key={rowIndex}>
+                        {Object.keys(failedRecords[0]).map((col, colIndex) => (
+                          <td
+                            key={col}
+                            style={{
+                              padding: "6px 8px",
+                              whiteSpace: "nowrap",
+                              ...(colIndex === 0 ? stickyCellStyle : {}),
+                            }}
+                          >
+                            {rec[col] !== null && rec[col] !== undefined
+                              ? String(rec[col])
+                              : "-"}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </Table>
+              </ScrollArea>
 
           </>
-            
         )}
       </Modal>
+
     </>
   );
 } 

@@ -31,7 +31,7 @@ def upload_to_postgres(data_id: UUID, df, db_engine, table_name, column_mapping=
         df = df.copy()
 
         # Add data_id column
-        df['data_id'] = str(data_id)
+        df['dataset_id'] = str(data_id)
 
         # ===== Handle column mapping =====
         # this supports only 1-1 column mapping,
@@ -84,6 +84,9 @@ def upload_to_postgres(data_id: UUID, df, db_engine, table_name, column_mapping=
         else:
             df_to_upload = df.copy()
 
+        #Added by Jainil @ 13/1/26
+        df_to_upload["dataset_id"] = str(data_id)
+
         # ===== Truncate table if requested =====
         if truncate_before_insert:
             with db_engine.begin() as conn:
@@ -94,8 +97,20 @@ def upload_to_postgres(data_id: UUID, df, db_engine, table_name, column_mapping=
             result = conn.execute(text(f"SELECT COUNT(*) FROM {table_name}"))
             total_before = result.scalar()
 
+        
+        #added by jainil @9-1-25
+        for col in df_to_upload.columns:
+            if df_to_upload[col].apply(lambda x: isinstance(x, dict)).any():
+                df_to_upload[col] = df_to_upload[col].apply(
+                    lambda x: json.dumps(x, ensure_ascii=False, default=str)
+                    if isinstance(x, dict)
+                    else x
+                )
         # ===== Upload =====
         df_to_upload.to_sql(table_name, con=db_engine, if_exists="append", index=False)
+
+        
+        
 
         # ===== Count records after insert =====
         with db_engine.begin() as conn:
@@ -273,6 +288,9 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
 
         # Define columns to read
         usecols = None if cfg.get("cols_to_read", "all") == "all" else cfg["cols_to_read"]
+       # Added by Jainil
+        if isinstance(usecols, str):
+            usecols = [int(c.strip()) for c in usecols.split(",") if c.strip().isdigit()]
 
         rename_col_by_idx = False
         header_row_idx = cfg.get("header_row", -1)
@@ -296,6 +314,9 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
 
         df = read_excel_data_only(excel_bytes, sheet_name, header_row_idx, cfg.get("skip_rows", 0), usecols=usecols)
 
+        
+
+        
         #shifting key_cols_read after setting cols_to_read
         #hvb @ 23/11/2025
         # key_column_indices = cfg.get("key_columns", [])  # define in your mapping config per sheet
@@ -321,11 +342,15 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
                         excel_col_indices = cols_to_read
 
                 df.columns = [f"_{sheet_alias}_col_{i}" for i in excel_col_indices]
+
         else:
+            #added by Jainil 
             df.columns = [
-                str(c).strip().lower().replace(" ", "_").replace("unnamed:", "")
+                f"{sheet_alias.lower()}__{str(c).strip().lower().replace(' ', '_').replace('unnamed:', '')}"
                 for c in df.columns
             ]
+
+       
 
         key_column_indices = cfg.get("key_columns", [])  # define in your mapping config per sheet
         if key_column_indices:
@@ -371,8 +396,7 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
 
         # --- Handle extras (if provided) ---
         extras_config = cfg.get("extra", None)
-        if extras_config:
-            from openpyxl import load_workbook
+        if extras_config:            
             wb = load_workbook(io.BytesIO(excel_bytes), read_only=True, data_only=True)
             ws = wb[sheet_name]
 
@@ -402,6 +426,73 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
         #dfs[cfg.get("alias", f"Sheet{sheet_no}")] = df
         dfs[sheet_alias] = df
 
+        # Added by Jainil
+        #Adding time-series data of DPD and Collection sheet
+
+        timeseries_cfg = cfg.get("timeseries", [])
+
+        if timeseries_cfg:
+            wb = load_workbook(io.BytesIO(excel_bytes), read_only=True, data_only=True)
+            ws = wb[sheet_name]
+            raw_rows = list(ws.iter_rows(values_only=True))
+
+            # Determine where actual data starts
+            header_row = cfg.get("header_row", -1)
+            header_skip = 1 if header_row == -1 else 0
+            data_start_row = header_skip + cfg.get("skip_rows", 0)
+
+            # Key column (Excel absolute index)
+            key_col_excel_idx = cfg["key_columns"][0]
+
+            # Build lookup: agreement_no -> timeseries dict
+            ts_by_key = {}
+
+            for excel_row in raw_rows[data_start_row:]:
+                if excel_row is None or key_col_excel_idx >= len(excel_row):
+                    continue
+
+                key = excel_row[key_col_excel_idx]
+                if key is None:
+                    continue
+
+                ts_data = {}
+
+                for ts in timeseries_cfg:
+                    col_idx = int(ts["source_col"])
+                    target = ts["target_name"].lower()
+
+                    if col_idx >= len(excel_row):
+                        val = None
+                    else:
+                        val = excel_row[col_idx]
+                        if isinstance(val, str):
+                            val = val.replace(",", "").strip()
+
+                    ts_data[target] = (
+                        float(val)
+                        if isinstance(val, (int, float, str))
+                        and str(val).replace(".", "", 1).isdigit()
+                        else None
+                    )
+
+                ts_by_key[key] = ts_data
+
+            # Attach to dataframe using key, not row index
+            if "__additional_fields" not in df.columns:
+                df["__additional_fields"] = [{} for _ in range(len(df))]
+
+            df_key_col_name = df.columns[cfg["key_columns"][0]]
+
+            for i, row in df.iterrows():
+                key = row[df_key_col_name]
+                ts = ts_by_key.get(key)
+
+                if ts:
+                    df.at[i, "__additional_fields"][sheet_alias.lower()] = ts
+
+
+        
+
 
     # === STEP 2: Join sheets using relations ===
     combined_df = None
@@ -425,8 +516,12 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
         # left_col_name = left_df.columns[rel["left_col"]]
         # right_col_name = right_df.columns[rel["right_col"]]
 
-        left_col_name = left_df.columns[left_col_id]
-        right_col_name = right_df.columns[right_col_id]
+        # left_col_name = left_df.columns[left_col_id]
+        # right_col_name = right_df.columns[right_col_id]
+
+        left_col_name = f"_{left_alias}_col_{left_col_id}"
+        right_col_name = f"_{right_alias}_col_{right_col_id}"
+
 
         print(f"🔗 Joining {left_alias}.{left_col_name} -> {right_alias}.{right_col_name}")
 
@@ -445,6 +540,11 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
                 right_on=right_col_name
             )
 
+        
+
+    print(combined_df.filter(like="_DPD36M").head())
+
+
     #Added hvb @ 23/11/2025 if combine_df is null, check size of dfs_sheet_wise and set first one as combined_df
     if combined_df is None:
         if len(dfs) == 0:
@@ -455,28 +555,69 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
             combined_df = first_df_value
 
     # --- Merge extra_data_json from multiple sheets into one column ---
-    extra_cols = [c for c in combined_df.columns if c.startswith("extra_data_json")]
-    if extra_cols:
-        def merge_extra_json(row):
+    # commented @9-1-26 by Jainil Changed this extra_cols for extra_data_json
+    # extra_cols = [c for c in combined_df.columns if c.startswith("extra_data_json")]
+    # if extra_cols:
+    #     def merge_extra_json(row):
+    #         merged = {}
+    #         for col in extra_cols:
+    #             val = row.get(col)
+    #             if isinstance(val, dict):
+    #                 merged.update(val)
+    #         return merged
+
+    #     # Always create extra_data_json explicitly
+    #     if len(extra_cols) == 1:
+    #         combined_df["extra_data_json"] = combined_df[extra_cols[0]]
+    #     else:
+    #         combined_df["extra_data_json"] = combined_df.apply(merge_extra_json, axis=1)
+
+    #     # Serialize safely
+    #     # combined_df["extra_data_json"] = combined_df["extra_data_json"].apply(
+    #     #     lambda v: json.dumps(v, ensure_ascii=False, default=str)
+    #     #     if isinstance(v, dict) and v else None
+
+    #     # DO NOT json.dumps here
+    #     # commented by jainil @9-1-25
+    #     combined_df["extra_data_json"] = combined_df["extra_data_json"].apply(
+    #         lambda v: v if isinstance(v, dict) else None
+       
+
+    #     )
+
+        
+
+    #combined_df.drop(columns=extra_cols, inplace=True, errors="ignore")
+
+    # 🔧 Merge __additional_fields from multiple sheets
+    af_cols = [c for c in combined_df.columns if c.startswith("__additional_fields")]
+
+    if af_cols:
+        def merge_af(row):
             merged = {}
-            for col in extra_cols:
-                val = row.get(col, {})
+            for c in af_cols:
+                val = row.get(c)
                 if isinstance(val, dict):
                     merged.update(val)
             return merged
 
-        # merge columns
-        if(len(extra_cols) > 1): #added hvb @ 24/11/2025 to merge if column count of extra is more than 1.
-            combined_df["extra_data_json"] = combined_df.apply(merge_extra_json, axis=1)
+        combined_df["__additional_fields"] = combined_df.apply(merge_af, axis=1)
 
-        #convert data to jsonb format
-        combined_df["extra_data_json"] = combined_df["extra_data_json"].apply(
-            lambda v: json.dumps(v, ensure_ascii=False, default=str) if isinstance(v, dict) else v
-        )
+        # drop old split columns
+        combined_df.drop(columns=af_cols, inplace=True)
 
-        # Optional: drop the original per-sheet extra_data_json columns
-        if suffix_sheet_num_to_extra: # Added hvb @ 24/11/2025 drop suffixed column which are now merged as one.
-            combined_df.drop(columns=extra_cols, inplace=True, errors="ignore")
+
+    if "__additional_fields" in combined_df.columns:
+        combined_df["additional_fields"] = combined_df["__additional_fields"]
+        combined_df.drop(columns=["__additional_fields"], inplace=True)
+    else:
+        combined_df["additional_fields"] = [{} for _ in range(len(combined_df))]
+
+
+
+
+    
+    
     print(f"✅ Completed Excel read and join in {datetime.now() - start_time}")
     return combined_df
     # mod hvb @ 23/11/2025 removed exception handler let callee function handle it.

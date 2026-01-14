@@ -7,6 +7,7 @@ from uuid import UUID
 import uuid
 import io
 import pandas as pd
+from datetime import date, datetime
 import logging
 import json
 import os
@@ -37,7 +38,17 @@ from app.models.FilterCriteriaItem import FilterCriteriaItem
 # Import profile config reader, HVB @ 20/11/2025
 from app.services.mapping_config_builder import get_full_profile_config
 
+# Import helper files from utils , Jainil @ 13/1/2026
+from app.utils.additional_fields_helper import normalize_additional_fields,MONTH_KEY_REGEX,MONTH_MAP
+from app.utils.Validation_helper import infer_npa_from_dpd36m,DPD36M_TOLERANCE_DAYS,DPD36M_THRESHOLD
+from datetime import date
+from calendar import monthrange
 router = APIRouter()
+
+#format date to dd-mm-yyyy
+def fmt(d):
+    return d.strftime("%d-%m-%Y") if d else "-"
+
 
 # In-memory store for custom bucket configs per dataset
 custom_buckets_store = {}
@@ -168,6 +179,11 @@ file: UploadFile = File(...),
         # }
 
         mapping_config = config["mapping_config"]
+        print("=== MAPPING CONFIG DEBUG ===")
+        from pprint import pprint
+        pprint(mapping_config)
+        print("============================")
+
         if not mapping_config:
             raise HTTPException(status_code=404, detail="Mapping profile not found,from backend")
 
@@ -177,6 +193,288 @@ file: UploadFile = File(...),
 
         try:
             merged_df = read_excel_map(contents, mapping_config)
+
+            print(merged_df["additional_fields"].iloc[0])
+
+
+
+            print("==== DEBUG merged_df columns ====")
+            for c in merged_df.columns:
+                print(c)
+            print("================================")
+
+            merged_df.drop(
+                    columns=[
+                        "__ts__dpd36m",
+                        "__ts__collection36m",
+                        "extra_data_json",
+                    ],
+                    inplace=True,
+                    errors="ignore"
+                )
+          
+           
+        # 🔑 Promote Pool date columns into semantic columns
+            if "date_of_npa" not in merged_df.columns:
+                merged_df["date_of_npa"] = merged_df.get("_Pool_col_4")
+
+            if "date_of_woff" not in merged_df.columns:
+                merged_df["date_of_woff"] = merged_df.get("_Pool_col_5")
+
+            # ===============================
+            # COMPUTE COLLECTION METRICS
+            # ===============================
+          
+
+            def normalize_date(val):
+                if val is None:
+                    return None
+
+                if isinstance(val, date) and not isinstance(val, datetime):
+                    return val
+
+                if isinstance(val, datetime):
+                    return val.date()
+
+                if isinstance(val, pd.Timestamp):
+                    return val.date()
+
+                if isinstance(val, (int, float)):
+                    try:
+                        return pd.to_datetime(val, unit="D", origin="1899-12-30").date()
+                    except Exception:
+                        return None
+
+                if isinstance(val, str):
+                    try:
+                        return pd.to_datetime(val, dayfirst=True).date()
+                    except Exception:
+                        return None
+
+                return None
+
+
+            def parse_month_key(key: str) -> date:
+                """
+                Converts 'apr_25' → 2025-04-30
+                """
+                mon, yy = key.split("_")
+                year = 2000 + int(yy)
+                month = MONTH_MAP[mon[:3]]
+                return date(year, month, monthrange(year, month)[1])
+
+
+            def is_post_event(d: date, event_date: date | None) -> bool:
+                """
+                Financial logic:
+                If an event happens anytime in a month,
+                the entire month counts as post-event.
+                """
+                if not event_date:
+                    return False
+                return d >= event_date.replace(day=1)
+
+
+            def compute_collection_metrics(additional_fields, date_of_npa, date_of_woff):
+                """
+                Returns:
+                (total_collection, post_npa_collection, post_woff_collection, m6, m12)
+                """
+
+                date_of_npa = normalize_date(date_of_npa)
+                date_of_woff = normalize_date(date_of_woff)
+
+                af = normalize_additional_fields(additional_fields)
+                series = af.get("collection36m", {})
+
+                if not isinstance(series, dict) or not series:
+                    return 0, 0, 0, 0, 0
+
+                parsed = []
+
+                for k, v in series.items():
+                    try:
+                        dt = parse_month_key(k)
+                        amt = float(v) if isinstance(v, (int, float)) else 0.0
+                        parsed.append((dt, amt))
+                    except Exception:
+                        continue
+
+                if not parsed:
+                    return 0, 0, 0, 0, 0
+
+                parsed.sort(key=lambda x: x[0])
+
+                total = sum(v for _, v in parsed)
+
+                post_npa = (
+                    sum(v for d, v in parsed if is_post_event(d, date_of_npa))
+                    if date_of_npa else None
+                )
+
+                post_woff = (
+                    sum(v for d, v in parsed if is_post_event(d, date_of_woff))
+                    if date_of_woff else None
+                )
+
+                m6 = sum(v for _, v in parsed[-6:])
+                m12 = sum(v for _, v in parsed[-12:])
+
+                return total, post_npa, post_woff, m6, m12
+
+
+                
+            
+            metrics_df = merged_df.apply(
+                lambda row: compute_collection_metrics(
+                    row["additional_fields"],
+                    row.get("date_of_npa"),
+                    row.get("date_of_woff")
+                ),
+                axis=1,
+                result_type="expand"
+            )
+
+            metrics_df.columns = [
+                "total_collection",
+                "post_npa_collection",
+                "post_woff_collection",
+                "m6_collection",
+                "m12_collection"
+            ]
+
+            drop_cols = [
+                c for c in merged_df.columns
+                if c.startswith("dpd__") or c.startswith("collection__")
+            ]
+
+            merged_df.drop(columns=drop_cols, inplace=True)
+
+
+            merged_df = pd.concat([merged_df, metrics_df], axis=1)
+            
+            print("SAMPLE additional_fields:", merged_df["additional_fields"].iloc[0])
+
+            print(
+                merged_df.loc[
+                    merged_df["_Pool_col_0"] == 174800100937,
+                    ["additional_fields", "total_collection", "m6_collection", "m12_collection"]
+                ].iloc[0]
+            )
+
+           # ===============================
+            # HARD VALIDATIONS (FINAL)
+            # ===============================
+
+            if merged_df.empty:
+                raise HTTPException(400, "No records found after mapping")
+
+            sample_af = merged_df["additional_fields"].iloc[0]
+
+            if not isinstance(sample_af, dict):
+                raise HTTPException(400, "additional_fields not created")
+
+            # -------------------------------
+            # Namespace presence
+            # -------------------------------
+            has_dpd = "dpd36m" in sample_af
+            has_collection = "collection36m" in sample_af
+
+            if not has_dpd and not has_collection:
+                raise HTTPException(400, "DPD36M and Collection36M both missing")
+
+            # -------------------------------
+            # DPD36M sanity
+            # -------------------------------
+            if has_dpd:
+                def invalid_dpd(af):
+                    if not isinstance(af, dict):
+                        return False
+
+                    dpd = af.get("dpd36m")
+                    if not isinstance(dpd, dict):
+                        return False
+
+                    return any(
+                        v is not None and (v < 0 or v > 1000)
+                        for v in dpd.values()
+                    )
+
+                if merged_df["additional_fields"].apply(invalid_dpd).any():
+                    raise HTTPException(400, "Invalid DPD36M value (must be 0–1000)")
+
+            # -------------------------------
+            # Collection36M sanity
+            # -------------------------------
+            if has_collection:
+                def invalid_collection(af):
+                    if not isinstance(af, dict):
+                        return False
+
+                    col = af.get("collection36m")
+                    if not isinstance(col, dict):
+                        return False
+
+                    return any(
+                        v is not None and v < 0
+                        for v in col.values()
+                    )
+
+
+                if merged_df["additional_fields"].apply(invalid_collection).any():
+                    raise HTTPException(400, "Negative collection value")
+
+            # -------------------------------
+            # Logical collection consistency
+            # -------------------------------
+            # if has_collection:
+            #     if (merged_df["post_npa_collection"] > merged_df["total_collection"]).any():
+            #         raise HTTPException(400, "Post-NPA > Total Collection")
+
+            #     if (merged_df["post_woff_collection"] > merged_df["post_npa_collection"]).any():
+            #         raise HTTPException(400, "Post-WOFF > Post-NPA")
+            mask = (
+                merged_df["post_npa_collection"].notna() &
+                merged_df["post_woff_collection"].notna()
+            )
+
+            if (merged_df.loc[mask, "post_woff_collection"]
+                > merged_df.loc[mask, "post_npa_collection"]).any():
+                raise HTTPException(400, "Post-WOFF > Post-NPA")
+
+
+                 
+            print(
+                "DB UPLOAD COLUMNS (resolved):",
+                sorted(
+                    c for c in merged_df.columns
+                    if c in column_mapping
+                )
+            )
+
+            computed_cols = [
+                "total_collection",
+                "post_npa_collection",
+                "post_woff_collection",
+                "m6_collection",
+                "m12_collection",
+            ]
+
+            print("🔍 COMPUTED COLUMNS CHECK:")
+            for c in computed_cols:
+                print(c, "→", c in merged_df.columns)
+
+            print("🚀 FINAL COLUMN MAPPING USED FOR DB UPLOAD:")
+            for src, tgt in column_mapping.items():
+                print(f"{src} → {tgt} | present in df:", src in merged_df.columns)
+
+
+            
+
+
+
+
+
         except Exception as read_error:
             try:
                 # mod hvb @ 23/11/2025 shifted from mapping read to here.
@@ -254,6 +552,7 @@ file: UploadFile = File(...),
         #     "_Pool_col_46": "auto_current_ltv_bucket",
         #     "extra_data_json": "additional_fields",
         # }
+
 
 
         # --- Example DB Engine ---
@@ -2275,15 +2574,86 @@ def get_validations(dataset_id: str, db: Session = Depends(get_db)):
         except Exception:
             continue
 
-    # 17 NPA-DPD rossing mismatch
-    npa_dpd_crossing_mismatch_count = db.query(models.LoanRecord).filter(
-        models.LoanRecord.dataset_id == dataset_uuid,
-        models.LoanRecord.date_of_npa.isnot(None),
-        or_(
-            models.LoanRecord.dpd_as_on_31st_jan_2025.is_(None),
-            models.LoanRecord.dpd_as_on_31st_jan_2025 < 90
-        )
-    ).count()
+    # Helper Function to normalize the dates
+
+    def normalize_date(val):
+        # 1️⃣ Empty / missing
+        if val is None:
+            return None
+
+        # 2️⃣ Already a date (but not datetime)
+        if isinstance(val, date) and not isinstance(val, datetime):
+            return val
+
+        # 3️⃣ datetime → date
+        if isinstance(val, datetime):
+            return val.date()
+
+        # 4️⃣ Pandas Timestamp → date
+        if isinstance(val, pd.Timestamp):
+            return val.date()
+
+        # 5️⃣ Excel serial number → date
+        if isinstance(val, (int, float)):
+            try:
+                return pd.to_datetime(
+                    val,
+                    unit="D",
+                    origin="1899-12-30"
+                ).date()
+            except Exception:
+                return None
+
+        # 6️⃣ String → date
+        if isinstance(val, str):
+            try:
+                # dayfirst=True handles Indian / Excel formats safely
+                return pd.to_datetime(val, dayfirst=True).date()
+            except Exception:
+                return None
+
+        # 7️⃣ Anything else → invalid
+        return None
+
+
+    # 17 DPD 36M vs NPA date mismatch count
+    dpd36m_npa_mismatch_count = 0
+
+    rows = db.query(models.LoanRecord).filter(
+            models.LoanRecord.dataset_id == dataset_uuid,
+            models.LoanRecord.date_of_npa.isnot(None),
+            models.LoanRecord.additional_fields.isnot(None)
+        ).all()
+
+    for r in rows:
+        try:
+            # dpd_fields = r.additional_fields.get("dpd36m")
+            inferred_npa = infer_npa_from_dpd36m(r.additional_fields)
+
+            # inferred_npa = infer_npa_from_dpd36m(r.additional_fields)
+
+            if not inferred_npa:
+                continue
+
+            # actual_npa = r.date_of_npa
+            actual_npa = normalize_date(r.date_of_npa)
+
+            if not actual_npa:
+                continue
+
+            delta_days = abs((actual_npa - inferred_npa).days)
+
+            if delta_days > DPD36M_TOLERANCE_DAYS:
+                dpd36m_npa_mismatch_count += 1
+
+            # print("DPD36M keys:", r.additional_fields.keys())
+            # print("Inferred NPA:", inferred_npa, "Actual:", r.date_of_npa)
+
+
+        except Exception:
+            continue
+
+
 
 
     return [
@@ -2304,8 +2674,9 @@ def get_validations(dataset_id: str, db: Session = Depends(get_db)):
         {"id": "emi_paid_collection_mismatch_count","name": "EMI Paid mismatch with Total Collection","failed_count": emi_paid_collection_mismatch_count},
         {"id": "tenor_mismatch_count","name": "Tenor Months Mismatch Count (EMI paid + Tenor = Current)","failed_count": tenor_mismatch_count},
         {"id": "emi_calculator_mismatch_count","name": "EMI calulated vs EMI stored mismatch","failed_count": emi_calculator_mismatch_count},
-        {"id": "npa_dpd_crossing_mismatch_count","name": "NPA Date mismatch with DPD crossing 90 days","failed_count": npa_dpd_crossing_mismatch_count}
-    ]
+        {"id": "dpd36m_npa_mismatch_count","name": "DPD 36M vs NPA date mismatch","failed_count": dpd36m_npa_mismatch_count}
+
+       ]
 
 @router.get("/{dataset_id}/validation-errors/{validation_id}")
 def get_validation_errors(dataset_id: str, validation_id: str, db: Session = Depends(get_db)):
@@ -2461,15 +2832,29 @@ def get_validation_errors(dataset_id: str, validation_id: str, db: Session = Dep
         return [
             {
                 "Loan No.": r.agreement_no,
-                "DPD": r.dpd_as_on_31st_jan_2025,
-                "Principal O/S": r.principal_os_amt,
-                "Disbursement": getattr(r, 'disbursement_amount', None),
-                "NPA Date": r.date_of_npa,
-                "Write-off Date": r.date_of_woff,
                 "Classification": r.classification,
+                "DPD": r.dpd_as_on_31st_jan_2025,
+
+                # EMI math
                 "EMI Amount": r.emi_amount,
-                "EMI Months" : r.emi_paid_months,
-                "Total Collection" : r.total_collection_since_inception
+                "EMI Paid (Stored)": r.emi_paid_months,
+                "EMI Paid (Expected)": round(
+                    float(r.total_collection_since_inception) / float(r.emi_amount), 2
+                ),
+                "EMI Delta (Months)": round(
+                    (float(r.total_collection_since_inception) / float(r.emi_amount))
+                    - float(r.emi_paid_months),
+                    2
+                ),
+
+                # Money context
+                "Total Collection (Since Inception)": r.total_collection_since_inception,
+                "Principal O/S": r.principal_os_amt,
+                "Disbursement Amount": getattr(r, "disbursement_amount", None),
+
+                # Dates
+                "NPA Date": fmt(r.date_of_npa),
+                "Write-off Date": fmt(r.date_of_woff),
             }
             for r in records
         ]
@@ -2494,15 +2879,39 @@ def get_validation_errors(dataset_id: str, validation_id: str, db: Session = Dep
         return [
             {
                 "Loan No.": r.agreement_no,
-                "DPD": r.dpd_as_on_31st_jan_2025,
-                "Principal O/S": r.principal_os_amt,
-                "Disbursement": getattr(r, 'disbursement_amount', None),
-                "NPA Date": r.date_of_npa,
-                "Write-off Date": r.date_of_woff,
                 "Classification": r.classification,
+                "DPD": r.dpd_as_on_31st_jan_2025,
+
+                # Tenor logic
+                "EMI Paid (Months)": r.emi_paid_months,
+                "Balance Tenor (Months)": r.balance_tenor_months,
+                "Current Tenor (Months)": r.current_tenor_months,
+                "Calculated Tenor (Paid + Balance)": (
+                    r.emi_paid_months + r.balance_tenor_months
+                    if r.emi_paid_months is not None and r.balance_tenor_months is not None
+                    else None
+                ),
+                "Tenor Delta (Months)": (
+                    (r.emi_paid_months + r.balance_tenor_months) - r.current_tenor_months
+                    if r.emi_paid_months is not None
+                    and r.balance_tenor_months is not None
+                    and r.current_tenor_months is not None
+                    else None
+                ),
+
+                # EMI & money context
+                "EMI Amount": r.emi_amount,
+                "Total Collection": r.total_collection,
+                "Principal O/S": r.principal_os_amt,
+                "Disbursement Amount": getattr(r, "disbursement_amount", None),
+
+                # Dates
+                "NPA Date": fmt(r.date_of_npa),
+                "Write-off Date": fmt(r.date_of_woff),
             }
             for r in records
         ]
+
 
 
 
@@ -2537,7 +2946,8 @@ def get_validation_errors(dataset_id: str, validation_id: str, db: Session = Dep
                 deviation_pct = abs(emi_calculated - emi_actual) / emi_actual * 100
 
                 if deviation_pct > 2:
-                    records.append(r)
+                    records.append((r, emi_calculated, deviation_pct))
+
 
             except Exception:
                 continue
@@ -2549,37 +2959,52 @@ def get_validation_errors(dataset_id: str, validation_id: str, db: Session = Dep
                 "Principal O/S": r.principal_os_amt,
                 "Disbursement": r.disbursement_amount,
                 "EMI Amount": r.emi_amount,
+                "Calculated EMI": round(emi_calculated, 2),
+                "Deviation (%)": round(deviation_pct, 2),
+                "Total Collection": r.total_collection,
                 "Tenor (Months)": r.original_tenor_months,
                 "ROI": r.roi_at_booking,
                 "Classification": r.classification,
             }
-            for r in records
+            for r, emi_calculated, deviation_pct in records
         ]
-
-    elif validation_id == "npa_dpd_crossing_mismatch_count":
+    
+    elif validation_id == "dpd36m_npa_mismatch_count":
         records = []
 
         rows = db.query(models.LoanRecord).filter(
             models.LoanRecord.dataset_id == dataset_uuid,
-            models.LoanRecord.date_of_npa.isnot(None)
+            models.LoanRecord.date_of_npa.isnot(None),
+            models.LoanRecord.additional_fields.isnot(None)
         ).all()
 
         for r in rows:
-            # If NPA date exists, DPD must be >= 90
-            if r.dpd_as_on_31st_jan_2025 is None or r.dpd_as_on_31st_jan_2025 < 90:
-                records.append(r)
+            try:
+                inferred_npa = infer_npa_from_dpd36m(r.additional_fields)
+
+                if not inferred_npa:
+                    continue
+
+                actual_npa = r.date_of_npa
+                delta_days = abs((actual_npa - inferred_npa).days)
+
+                if delta_days > DPD36M_TOLERANCE_DAYS:
+                    records.append((r, inferred_npa, delta_days))
+
+            except Exception:
+                continue
 
         return [
             {
                 "Loan No.": r.agreement_no,
-                "DPD": r.dpd_as_on_31st_jan_2025,
-                "Principal O/S": r.principal_os_amt,
-                "Disbursement": getattr(r, "disbursement_amount", None),
-                "NPA Date": r.date_of_npa,
-                "Write-off Date": r.date_of_woff,
+                "DPD (Latest)": r.dpd,
+                "Inferred NPA (from DPD36M)": fmt(inferred_npa),
+                "Actual NPA Date": fmt(r.date_of_npa),
+                "Delta (Days)": delta_days,
                 "Classification": r.classification,
+                "State": r.state
             }
-            for r in records
+            for r, inferred_npa, delta_days in records
         ]
 
 
@@ -2596,8 +3021,8 @@ def get_validation_errors(dataset_id: str, validation_id: str, db: Session = Dep
             "DPD": r.dpd_as_on_31st_jan_2025,
             "Principal O/S": r.principal_os_amt,
             "Disbursement": getattr(r, 'disbursement_amount', None),
-            "NPA Date": r.date_of_npa,
-            "Write-off Date": r.date_of_woff,
+            "NPA Date": fmt(r.date_of_npa),
+            "Write-off Date": fmt(r.date_of_woff),
             "Classification": r.classification,
         }
         for r in records
