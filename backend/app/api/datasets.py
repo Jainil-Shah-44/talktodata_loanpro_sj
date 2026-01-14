@@ -25,7 +25,8 @@ from app.schemas.schemas import UpdateFileType
 from app.services.csv_processor import process_csv_file
 from app.core.auth.dependencies import get_current_user, get_current_user_optional
 from fastapi import APIRouter, Depends, HTTPException, File, Form, UploadFile, Request
-
+from fastapi.responses import StreamingResponse
+from io import BytesIO
 # Import the fixed writeoff summary function
 from app.api.fixed_writeoff_summary import generate_writeoff_pool_summary
 
@@ -43,6 +44,14 @@ from app.utils.additional_fields_helper import normalize_additional_fields,MONTH
 from app.utils.Validation_helper import infer_npa_from_dpd36m,DPD36M_TOLERANCE_DAYS,DPD36M_THRESHOLD
 from datetime import date
 from calendar import monthrange
+from openpyxl.styles import Alignment
+from openpyxl.utils import get_column_letter
+import logging
+import time
+
+logger = logging.getLogger(__name__)
+
+
 router = APIRouter()
 
 #format date to dd-mm-yyyy
@@ -999,7 +1008,9 @@ def get_loan_records(
             "carrying_value_as_on_date", "sanction_amt", "total_amt_disb",
             "pos_gt_dis", "june_24_pool", "has_validation_errors",
             "validation_error_types", "sanction_date", "date_of_npa",
-            "date_of_woff", "last_disb_date"
+            "date_of_woff", "last_disb_date","post_npa_collection",
+            "post_woff_collection","m6_collection","m12_collection","total_collection",
+
         ]
         
         # Create a dictionary with the record data
@@ -1029,6 +1040,17 @@ def get_loan_records(
                         'TOTAL_BALANCE_AMT', 'Total_Balance_Amount'
                     ]
                     record_dict[field] = extract_field_value(record, field, total_balance_field_names)
+
+                elif field in [
+                    "post_npa_collection",
+                    "post_woff_collection",
+                    "m6_collection",
+                    "m12_collection",
+                    "total_collection"
+                ]:
+                    val = getattr(record, field)
+                    record_dict[field] = float(val) if val is not None else None
+
                 else:
                     value = getattr(record, field)
                     record_dict[field] = value
@@ -1113,6 +1135,118 @@ def get_debug_loan_records(
         debug_info["record_samples"].append(record_info)
     
     return debug_info
+
+@router.get("/{dataset_id}/records/export")
+def export_loan_records_excel(
+    dataset_id: str,
+    db: Session = Depends(get_db)
+):
+
+    start_time = time.time()
+
+    logger.info(
+        f"[RECORD_EXPORT] Request received | dataset_id={dataset_id}"
+    )
+
+    dataset_uuid = UUID(dataset_id)
+
+    records = (
+        db.query(models.LoanRecord)
+        .filter(models.LoanRecord.dataset_id == dataset_uuid)
+        .order_by(models.LoanRecord.agreement_no)
+        .all()
+    )
+
+    record_count = len(records)
+
+    logger.info(
+        f"[RECORD_EXPORT] Records fetched | dataset_id={dataset_id} | count={record_count}"
+    )
+
+    if record_count == 0:
+        logger.warning(
+            f"[RECORD_EXPORT] No records found | dataset_id={dataset_id}"
+        )
+        raise HTTPException(status_code=404, detail="No records found")
+
+    logger.info(
+        f"[RECORD_EXPORT] Excel generation started | dataset_id={dataset_id}"
+    )
+
+    if not records:
+        raise HTTPException(status_code=404, detail="No records found")
+
+    rows = []
+    for r in records:
+        rows.append({
+            "Agreement No": r.agreement_no,
+            "DPD": r.dpd,
+            "Classification": r.classification,
+            "Principal OS": float(r.principal_os_amt) if r.principal_os_amt is not None else None,
+            "Total Balance": float(r.total_balance_amt) if r.total_balance_amt is not None else None,
+
+            "Date of NPA": r.date_of_npa,
+            "Date of Write-off": r.date_of_woff,
+
+            "Post NPA Collection": float(r.post_npa_collection) if r.post_npa_collection is not None else None,
+            "Post WOFF Collection": float(r.post_woff_collection) if r.post_woff_collection is not None else None,
+            "6M Collection": float(r.m6_collection) if r.m6_collection is not None else None,
+            "12M Collection": float(r.m12_collection) if r.m12_collection is not None else None,
+            "Total Collection": float(r.total_collection) if r.total_collection is not None else None,
+
+            "Product Type": r.product_type,
+            "State": r.state,
+        })
+
+    df = pd.DataFrame(rows)
+
+    output = BytesIO()
+
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        df.to_excel(writer, index=False, sheet_name="Loan Records")
+
+        ws = writer.sheets["Loan Records"]
+
+        # Wrap text + vertical align top for all cells
+        for row in ws.iter_rows():
+            for cell in row:
+                cell.alignment = Alignment(
+                    wrap_text=True,
+                    vertical="top"
+                )
+
+        # Auto-adjust column widths (tight, readable)
+        for col_idx, col_cells in enumerate(ws.columns, start=1):
+            max_length = 0
+            col_letter = get_column_letter(col_idx)
+
+            for cell in col_cells:
+                try:
+                    if cell.value:
+                        max_length = max(max_length, len(str(cell.value)))
+                except:
+                    pass
+
+            # Tight width with cap (prevents huge columns)
+            ws.column_dimensions[col_letter].width = min(max_length + 2, 35)
+
+    output.seek(0)
+
+
+    logger.info(
+        f"[RECORD_EXPORT] Excel generation completed | "
+        f"dataset_id={dataset_id} | "
+        f"rows={record_count} | "
+        f"time_taken={round(time.time() - start_time, 2)}s"
+    )
+    
+    return StreamingResponse(
+        output,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f"attachment; filename=loan_records_{dataset_id}.xlsx"
+        },
+    )
 
 @router.post("/{dataset_id}/create_samples", response_model=schemas.Dataset)
 async def create_sample_records(

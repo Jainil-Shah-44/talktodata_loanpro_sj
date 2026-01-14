@@ -82,6 +82,19 @@ export const datasetService = {
 
 };
 
+// Excel Download of Records
+export const recordService = {
+  exportExcel: async (datasetId: string): Promise<Blob> => {
+  const res = await apiClient.get(
+    `/datasets/${datasetId}/records/export`,
+    { responseType: "blob" }
+  );
+  return res.data;
+},
+
+};
+
+
 // Validations
 export const validationService = {
   getValidations: async (datasetId: string) => {

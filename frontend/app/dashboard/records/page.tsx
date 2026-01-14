@@ -52,6 +52,8 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { useDatasets } from '@/hooks/useDatasets';
 import { useLoanRecords, LoanRecord } from '@/hooks/useLoanRecords';
 import Link from 'next/link';
+import { recordService } from '@/src/api/services';
+import { saveAs } from "file-saver";
 
 // Mock loan record type - in a real app, you would define this in your types file
 // interface LoanRecord {
@@ -83,6 +85,17 @@ import Link from 'next/link';
 //       .filter(() => Math.random() > 0.5) : 
 //     undefined
 // }));
+const renderCurrency = (value: number | null | undefined) => {
+  if (value === null || value === undefined) return 'NA';
+  if (typeof value !== 'number' || isNaN(value)) return 'NA';
+
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    maximumFractionDigits: 2,
+  }).format(value);
+};
+
 
 export default function RecordsPage() {
   const router = useRouter();
@@ -101,6 +114,8 @@ export default function RecordsPage() {
   const [selectedRecord, setSelectedRecord] = useState<LoanRecord | null>(null);
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
   const [records, setRecords] = useState<LoanRecord[]>([]);
+  const [exporting, setExporting] = useState(false);
+
   
   const { records: fetchedRecords, loading: recordsLoading, error: recordsError, totalRecords } = useLoanRecords(
     datasetId, 
@@ -205,6 +220,15 @@ export default function RecordsPage() {
           case 'dpd_as_on_31st_jan_2025':
             comparison = (a.dpd_as_on_31st_jan_2025 || 0) - (b.dpd_as_on_31st_jan_2025 || 0);
             break;
+          case 'post_npa_collection':
+          case 'post_woff_collection':
+          case 'm6_collection':
+          case 'm12_collection':
+          case 'total_collection':
+            comparison =
+              (a[sortField] ?? -1) - (b[sortField] ?? -1);
+            break;
+
           default:
             comparison = 0;
         }
@@ -311,6 +335,24 @@ export default function RecordsPage() {
       return 'N/A';
     }
   };
+
+  const handleExportAllRecords = async () => {
+      if (!datasetId) return;
+
+      try {
+        setExporting(true);
+
+        const blob = await recordService.exportExcel(datasetId);
+        saveAs(blob, "loan_records.xlsx");
+      } catch (err) {
+        console.error("Export failed", err);
+      } finally {
+        setExporting(false);
+      }
+    };
+
+
+
 
   const getStatusBadge = (status: string | undefined) => {
     if (!status) {
@@ -615,12 +657,17 @@ export default function RecordsPage() {
           </Button>
           <Title order={2}>Loan Records</Title>
         </Group>
-        <Button 
-          leftSection={<IconDownload size="1rem" />}
+        <Button
           variant="outline"
+          leftSection={<IconDownload size={16} />}
+          loading={exporting}
+          onClick={handleExportAllRecords}
+          disabled={!datasetId}
         >
           Export Data
         </Button>
+
+
         <Button
           onClick={handleReprocessDataset}
           loading={reprocessing}
@@ -750,11 +797,21 @@ export default function RecordsPage() {
                 <Table.Th onClick={() => handleSort('post_npa_collection')}>
                   Post NPA Collection {getSortIcon('post_npa_collection')}
                 </Table.Th>
-                <Table.Th onClick={() => handleSort('6m_col')}>
-                  6m Collection {getSortIcon('6m_col')}
+
+                <Table.Th onClick={() => handleSort('post_woff_collection')}>
+                  Post WOFF Collection {getSortIcon('post_woff_collection')}
                 </Table.Th>
-                <Table.Th onClick={() => handleSort('12m_col')}>
-                  12m Collection {getSortIcon('12m_col')}
+
+                <Table.Th onClick={() => handleSort('m6_collection')}>
+                  6M Collection {getSortIcon('m6_collection')}
+                </Table.Th>
+
+                <Table.Th onClick={() => handleSort('m12_collection')}>
+                  12M Collection {getSortIcon('m12_collection')}
+                </Table.Th>
+
+                <Table.Th onClick={() => handleSort('total_collection')}>
+                  Total Collection {getSortIcon('total_collection')}
                 </Table.Th>
                 <Table.Th>
                   Actions
@@ -790,9 +847,11 @@ export default function RecordsPage() {
                       <Table.Td>{getFieldValue('no_of_emi_paid', record, ['no_of_emi_paid_months', 'no_of_emi'])}</Table.Td>
                       <Table.Td>{getFieldValue('balance_tenor', record, ['balance_tenor_months'])}</Table.Td>
                       <Table.Td>{getFieldValue('legal_status', record, ['arbitration_status', 'if_action_taken_under_s.138_of_ni_act'])}</Table.Td>
-                      <Table.Td>{formatCurrency(getFieldValue('post_npa_collection', record, []))}</Table.Td>
-                      <Table.Td>{formatCurrency(getFieldValue('6m_col', record, []))}</Table.Td>
-                      <Table.Td>{formatCurrency(getFieldValue('12m_col', record, []))}</Table.Td>
+                      <Table.Td>{renderCurrency(record.post_npa_collection)}</Table.Td> 
+                      <Table.Td>{renderCurrency(record.post_woff_collection)}</Table.Td>
+                      <Table.Td>{renderCurrency(record.m6_collection)}</Table.Td>
+                      <Table.Td>{renderCurrency(record.m12_collection)}</Table.Td>
+                      <Table.Td>{renderCurrency(record.total_collection)}</Table.Td>
                       <Table.Td>
                         <Menu position="bottom-end" withArrow>
                           <Menu.Target>
