@@ -106,8 +106,62 @@ def upload_to_postgres(data_id: UUID, df, db_engine, table_name, column_mapping=
                     if isinstance(x, dict)
                     else x
                 )
+
+        # ===============================
+        # ETL HYGIENE (MANDATORY)
+        # ===============================
+
+        NULL_LIKE = {"BLANKS", "BLANK", "NA", "N/A", "-", "--", ""}
+
+        INT_COLS = [
+            "current_tenor_months",
+            "balance_tenor_months",
+            "emi_paid_months",
+            "dpd",
+            "dpd_as_per_string",
+            "dpd_as_on_31st_jan_2025",
+            "original_tenor_months",
+        ]
+
+        FLOAT_COLS = [
+            "principal_os_amt",
+            "total_balance_amt",
+            "interest_overdue_amt",
+            "emi_amount",
+            "m6_collection",
+            "m12_collection",
+            "total_collection",
+            "post_npa_collection",
+            "post_woff_collection",
+            "collection_12m",
+            "roi_at_booking",
+        ]
+
+        def clean_numeric(df, cols):
+            for col in cols:
+                if col in df.columns:
+                    df[col] = (
+                        df[col]
+                        .replace(list(NULL_LIKE), None)
+                        .pipe(pd.to_numeric, errors="coerce")
+                    )
+            return df
+
+        df_to_upload = clean_numeric(df_to_upload, INT_COLS)
+        df_to_upload = clean_numeric(df_to_upload, FLOAT_COLS)
+
+        # ===============================
+        # SAFE DB INSERT
+        # ===============================
+        df_to_upload.to_sql(
+            table_name,
+            con=db_engine,
+            if_exists="append",
+            index=False
+        )
+
         # ===== Upload =====
-        df_to_upload.to_sql(table_name, con=db_engine, if_exists="append", index=False)
+        # df_to_upload.to_sql(table_name, con=db_engine, if_exists="append", index=False)
 
         
         
