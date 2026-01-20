@@ -378,16 +378,13 @@ file: UploadFile = File(...),
             if merged_df.empty:
                 raise HTTPException(400, "No records found after mapping")
 
-            sample_af = merged_df["additional_fields"].iloc[0]
+            def namespace_exists(df, namespace):
+                return df["additional_fields"].apply(
+                    lambda x: isinstance(x, dict) and namespace in x and bool(x[namespace])
+                ).any()
 
-            if not isinstance(sample_af, dict):
-                raise HTTPException(400, "additional_fields not created")
-
-            # -------------------------------
-            # Namespace presence
-            # -------------------------------
-            has_dpd = "dpd36m" in sample_af
-            has_collection = "collection36m" in sample_af
+            has_dpd = namespace_exists(merged_df, "dpd36m")
+            has_collection = namespace_exists(merged_df, "collection36m")
 
             if not has_dpd and not has_collection:
                 raise HTTPException(400, "DPD36M and Collection36M both missing")
