@@ -108,11 +108,31 @@ def upload_to_postgres(data_id: UUID, df, db_engine, table_name, column_mapping=
                 )
 
         # ===============================
-        # ETL HYGIENE (MANDATORY)
+        # BULLETPROOF ETL HYGIENE
         # ===============================
 
-        NULL_LIKE = {"BLANKS", "BLANK", "NA", "N/A", "-", "--", ""}
+     
+       
+        NULL_LIKE = {
+            "BLANKS", "BLANK", "NA", "N/A", "NULL",
+            "-", "--", "", "NONE"
+        }
 
+        def normalize_nulls(val):
+            if val is None:
+                return None
+            if isinstance(val, str):
+                v = val.strip().upper()
+                if v in NULL_LIKE:
+                    return None
+            return val
+
+
+        # 1️⃣ Normalize ALL cells (cheap + safe)
+        df_to_upload = df_to_upload.applymap(normalize_nulls)
+
+
+        # 2️⃣ Force numeric coercion based on DB intent
         INT_COLS = [
             "current_tenor_months",
             "balance_tenor_months",
@@ -137,18 +157,35 @@ def upload_to_postgres(data_id: UUID, df, db_engine, table_name, column_mapping=
             "roi_at_booking",
         ]
 
-        def clean_numeric(df, cols):
-            for col in cols:
-                if col in df.columns:
-                    df[col] = (
-                        df[col]
-                        .replace(list(NULL_LIKE), None)
-                        .pipe(pd.to_numeric, errors="coerce")
-                    )
-            return df
+        for col in INT_COLS:
+            if col in df_to_upload.columns:
+                df_to_upload[col] = pd.to_numeric(
+                    df_to_upload[col], errors="coerce"
+                ).astype("Int64")
 
-        df_to_upload = clean_numeric(df_to_upload, INT_COLS)
-        df_to_upload = clean_numeric(df_to_upload, FLOAT_COLS)
+        for col in FLOAT_COLS:
+            if col in df_to_upload.columns:
+                df_to_upload[col] = pd.to_numeric(
+                    df_to_upload[col], errors="coerce"
+                )
+
+
+        # ===============================
+        # FINAL SAFETY CHECK (DEBUG)
+        # ===============================
+        bad_ints = {}
+        for col in INT_COLS:
+            if col in df_to_upload.columns:
+                bad = df_to_upload[col].astype(str).str.contains(
+                    r"[A-Za-z]", na=False
+                )
+                if bad.any():
+                    bad_ints[col] = df_to_upload.loc[bad, col].head(5).tolist()
+
+        if bad_ints:
+            raise ValueError(
+                f"Non-numeric values still present in INT columns: {bad_ints}"
+            )
 
         # ===============================
         # SAFE DB INSERT
