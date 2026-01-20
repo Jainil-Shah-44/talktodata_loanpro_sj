@@ -704,6 +704,10 @@ def read_excel_data_only(file_content, sheet_name, header=None, skiprows=0, usec
     # Convert to DataFrame
     df = pd.DataFrame(data)
 
+    print("DEBUG Pool shape:", df.shape)
+    print("DEBUG Pool columns loaded:", list(range(df.shape[1])))
+
+
     # Apply header logic manually
     if header is not None:
         df.columns = df.iloc[header].tolist()
