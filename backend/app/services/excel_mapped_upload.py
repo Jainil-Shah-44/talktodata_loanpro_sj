@@ -216,6 +216,46 @@ def upload_to_postgres(data_id: UUID, df, db_engine, table_name, column_mapping=
         traceback.print_exc()
         return {"status": False, "inserted": 0, "total": len(df) if df is not None else 0, "message": str(e)}
 
+def extract_timeseries_from_df(df, key_col_idx, timeseries_cfg):
+    ts_by_key = {}
+
+    key_col = df.columns[key_col_idx]
+
+    for _, row in df.iterrows():
+        key = row[key_col]
+        if key is None:
+            continue
+
+        ts = {}
+
+        for cfg in timeseries_cfg:
+            col_idx = int(cfg["source_col"])
+            target = cfg["target_name"].lower()
+
+            if col_idx >= len(df.columns):
+                ts[target] = None
+                continue
+
+            val = row.iloc[col_idx]
+
+            if val is None:
+                ts[target] = None
+                continue
+
+            try:
+                if isinstance(val, str):
+                    val = val.replace(",", "").strip()
+
+                ts[target] = float(val)
+            except Exception:
+                ts[target] = None
+
+        # Fail-fast sanity
+        if sum(v is not None for v in ts.values()) >= 2:
+            ts_by_key[key] = ts
+
+    return ts_by_key
+
 
 # ============================================================
 # 2️⃣ FUNCTION:
@@ -403,7 +443,14 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
         #     usecols=usecols,
         # )
 
-        df = read_excel_data_only(excel_bytes, sheet_name, header_row_idx, cfg.get("skip_rows", 0), usecols=usecols)
+        # df = read_excel_data_only(excel_bytes, sheet_name, header_row_idx, cfg.get("skip_rows", 0), usecols=usecols)
+        df = read_excel_env_safe(
+        excel_bytes,
+        sheet_name,
+        header=header_row_idx,
+        skiprows=cfg.get("skip_rows", 0),
+        usecols=usecols
+    )
 
         
 
@@ -517,69 +564,33 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
         #dfs[cfg.get("alias", f"Sheet{sheet_no}")] = df
         dfs[sheet_alias] = df
 
-        # Added by Jainil
-        #Adding time-series data of DPD and Collection sheet
+        # ============================================================
+        # ENVIRONMENT-SAFE TIMESERIES LOGIC (FINAL)
+        # ============================================================
 
         timeseries_cfg = cfg.get("timeseries", [])
 
         if timeseries_cfg:
-            wb = load_workbook(io.BytesIO(excel_bytes), read_only=True, data_only=True)
-            ws = wb[sheet_name]
-            raw_rows = list(ws.iter_rows(values_only=True))
 
-            # Determine where actual data starts
-            header_row = cfg.get("header_row", -1)
-            header_skip = 1 if header_row == -1 else 0
-            data_start_row = header_skip + cfg.get("skip_rows", 0)
+            key_col_idx = cfg["key_columns"][0]
+            key_col_name = df.columns[key_col_idx]
 
-            # Key column (Excel absolute index)
-            key_col_excel_idx = cfg["key_columns"][0]
+            # Build timeseries from DataFrame ONLY
+            ts_by_key = extract_timeseries_from_df(
+                df=df,
+                key_col_idx=key_col_idx,
+                timeseries_cfg=timeseries_cfg
+            )
 
-            # Build lookup: agreement_no -> timeseries dict
-            ts_by_key = {}
-
-            for excel_row in raw_rows[data_start_row:]:
-                if excel_row is None or key_col_excel_idx >= len(excel_row):
-                    continue
-
-                key = excel_row[key_col_excel_idx]
-                if key is None:
-                    continue
-
-                ts_data = {}
-
-                for ts in timeseries_cfg:
-                    col_idx = int(ts["source_col"])
-                    target = ts["target_name"].lower()
-
-                    if col_idx >= len(excel_row):
-                        val = None
-                    else:
-                        val = excel_row[col_idx]
-                        if isinstance(val, str):
-                            val = val.replace(",", "").strip()
-
-                    ts_data[target] = (
-                        float(val)
-                        if isinstance(val, (int, float, str))
-                        and str(val).replace(".", "", 1).isdigit()
-                        else None
-                    )
-
-                ts_by_key[key] = ts_data
-
-            # Attach to dataframe using key, not row index
+            # Ensure container exists
             if "__additional_fields" not in df.columns:
                 df["__additional_fields"] = [{} for _ in range(len(df))]
 
-            df_key_col_name = df.columns[cfg["key_columns"][0]]
-
+            # Attach using key, not row order
             for i, row in df.iterrows():
-                key = row[df_key_col_name]
-                ts = ts_by_key.get(key)
-
-                if ts:
-                    df.at[i, "__additional_fields"][sheet_alias.lower()] = ts
+                key = row[key_col_name]
+                if key in ts_by_key:
+                    df.at[i, "__additional_fields"][sheet_alias.lower()] = ts_by_key[key]
 
 
         
@@ -773,7 +784,7 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
 # 4️⃣ Read excel as data only, avoiding reading styles, for fast load
 # ============================================================
 
-def read_excel_data_only(file_content, sheet_name, header=None, skiprows=0, usecols=None,max_empty_rows=20):
+# def read_excel_data_only(file_content, sheet_name, header=None, skiprows=0, usecols=None,max_empty_rows=20):
     # Load workbook in read-only mode, data_only=True ensures only cell values are read
     wb = load_workbook(io.BytesIO(file_content), read_only=True, data_only=True)
     ws = wb[sheet_name]
@@ -818,6 +829,34 @@ def read_excel_data_only(file_content, sheet_name, header=None, skiprows=0, usec
 
     df.reset_index(drop=True, inplace=True)
     return df
+def read_excel_env_safe(
+    excel_bytes,
+    sheet_name,
+    header=None,
+    skiprows=0,
+    usecols=None
+):
+    df = pd.read_excel(
+        io.BytesIO(excel_bytes),
+        sheet_name=sheet_name,
+        engine="openpyxl",      # 🔒 pinned
+        header=header,
+        skiprows=skiprows,
+        usecols=usecols,
+        dtype=object            # 🔒 preserve raw values
+    )
+
+    # Normalize empty values
+    df = df.replace(
+        {pd.NA: None, "": None, "nan": None, "NaN": None}
+    )
+
+    # Strip strings consistently
+    df = df.applymap(
+        lambda x: x.strip() if isinstance(x, str) else x
+    )
+
+    return df.reset_index(drop=True)
 
 def safe_serialize(val):
     if val is None or pd.isna(val):
