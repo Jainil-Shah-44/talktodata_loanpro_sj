@@ -599,19 +599,13 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
         timeseries_cfg = cfg.get("timeseries", [])
 
         if timeseries_cfg:
-            header_row = cfg.get("header_row", -1)
-            header_skip = 1 if header_row == -1 else 0
-            data_start_row = header_skip + cfg.get("skip_rows", 0)
-
-            key_col_excel_idx = cfg["key_columns"][0]
+            key_col_idx = cfg["key_columns"][0]
+            key_col_name = df.columns[key_col_idx]
 
             ts_by_key = {}
 
-            for excel_row in raw_rows[data_start_row:]:
-                if not excel_row or key_col_excel_idx >= len(excel_row):
-                    continue
-
-                raw_key = excel_row[key_col_excel_idx]
+            for _, row in df.iterrows():
+                raw_key = row[key_col_name]
                 key = normalize_key(raw_key)
 
                 if not key:
@@ -621,9 +615,12 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
 
                 for ts in timeseries_cfg:
                     col_idx = int(ts["source_col"])
-                    target = ts["target_name"].lower()
 
-                    val = excel_row[col_idx] if col_idx < len(excel_row) else None
+                    # source_col is ABSOLUTE Excel index
+                    if col_idx >= len(df.columns):
+                        val = None
+                    else:
+                        val = row.iloc[col_idx]
 
                     if isinstance(val, str):
                         val = val.replace(",", "").strip()
@@ -633,19 +630,17 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
                     except Exception:
                         val = None
 
-                    ts_data[target] = val
+                    ts_data[ts["target_name"].lower()] = val
 
                 ts_by_key[key] = ts_data
 
-            # Attach to dataframe
+            # Attach timeseries to additional_fields
             if "__additional_fields" not in df.columns:
                 df["__additional_fields"] = [{} for _ in range(len(df))]
 
-            df_key_col_name = df.columns[cfg["key_columns"][0]]
-
             for i, row in df.iterrows():
-                row_key = normalize_key(row[df_key_col_name])
-                ts = ts_by_key.get(row_key)
+                key = normalize_key(row[key_col_name])
+                ts = ts_by_key.get(key)
 
                 if ts is not None:
                     df.at[i, "__additional_fields"].setdefault(
