@@ -129,7 +129,7 @@ def upload_to_postgres(data_id: UUID, df, db_engine, table_name, column_mapping=
 
 
         # 1️⃣ Normalize ALL cells (cheap + safe)
-        df_to_upload = df_to_upload.applymap(normalize_nulls)
+        df_to_upload = df_to_upload.map(normalize_nulls)
 
 
         # 2️⃣ Force numeric coercion based on DB intent
