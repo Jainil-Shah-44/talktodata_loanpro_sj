@@ -256,6 +256,33 @@ def extract_timeseries_from_df(df, key_col_idx, timeseries_cfg):
 
     return ts_by_key
 
+def normalize_key(val):
+    """
+    Environment-safe Excel key normalizer.
+    Handles int, float, str, scientific notation.
+    """
+    if val is None:
+        return None
+
+    if isinstance(val, (int,)):
+        return str(val)
+
+    if isinstance(val, float):
+        if val.is_integer():
+            return str(int(val))
+        return str(val)
+
+    if isinstance(val, str):
+        v = val.strip()
+        # Excel scientific notation protection
+        if v.replace(".", "", 1).isdigit():
+            try:
+                return str(int(float(v)))
+            except Exception:
+                return v
+        return v
+
+    return str(val)
 
 # ============================================================
 # 2️⃣ FUNCTION:
@@ -452,6 +479,7 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
         usecols=usecols
     )
 
+    
         
 
         
@@ -564,33 +592,65 @@ def fn_read_excel_map_base(excel_bytes, mapping_config):
         #dfs[cfg.get("alias", f"Sheet{sheet_no}")] = df
         dfs[sheet_alias] = df
 
-        # ============================================================
-        # ENVIRONMENT-SAFE TIMESERIES LOGIC (FINAL)
-        # ============================================================
+        # ===============================
+        # ENV-SAFE TIMESERIES EXTRACTION
+        # ===============================
 
         timeseries_cfg = cfg.get("timeseries", [])
 
         if timeseries_cfg:
+            header_row = cfg.get("header_row", -1)
+            header_skip = 1 if header_row == -1 else 0
+            data_start_row = header_skip + cfg.get("skip_rows", 0)
 
-            key_col_idx = cfg["key_columns"][0]
-            key_col_name = df.columns[key_col_idx]
+            key_col_excel_idx = cfg["key_columns"][0]
 
-            # Build timeseries from DataFrame ONLY
-            ts_by_key = extract_timeseries_from_df(
-                df=df,
-                key_col_idx=key_col_idx,
-                timeseries_cfg=timeseries_cfg
-            )
+            ts_by_key = {}
 
-            # Ensure container exists
+            for excel_row in raw_rows[data_start_row:]:
+                if not excel_row or key_col_excel_idx >= len(excel_row):
+                    continue
+
+                raw_key = excel_row[key_col_excel_idx]
+                key = normalize_key(raw_key)
+
+                if not key:
+                    continue
+
+                ts_data = {}
+
+                for ts in timeseries_cfg:
+                    col_idx = int(ts["source_col"])
+                    target = ts["target_name"].lower()
+
+                    val = excel_row[col_idx] if col_idx < len(excel_row) else None
+
+                    if isinstance(val, str):
+                        val = val.replace(",", "").strip()
+
+                    try:
+                        val = float(val)
+                    except Exception:
+                        val = None
+
+                    ts_data[target] = val
+
+                ts_by_key[key] = ts_data
+
+            # Attach to dataframe
             if "__additional_fields" not in df.columns:
                 df["__additional_fields"] = [{} for _ in range(len(df))]
 
-            # Attach using key, not row order
+            df_key_col_name = df.columns[cfg["key_columns"][0]]
+
             for i, row in df.iterrows():
-                key = row[key_col_name]
-                if key in ts_by_key:
-                    df.at[i, "__additional_fields"][sheet_alias.lower()] = ts_by_key[key]
+                row_key = normalize_key(row[df_key_col_name])
+                ts = ts_by_key.get(row_key)
+
+                if ts is not None:
+                    df.at[i, "__additional_fields"].setdefault(
+                        sheet_alias.lower(), {}
+                    ).update(ts)
 
 
         
