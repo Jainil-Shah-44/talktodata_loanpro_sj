@@ -110,10 +110,10 @@ export default function RecordsPage() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [validationFilter, setValidationFilter] = useState<string>(filterParam === 'validation_errors' ? 'errors_only' : 'all');
   const [activePage, setActivePage] = useState(1);
-  const [loading, setLoading] = useState(true);
+  //const [loading, setLoading] = useState(true);
   const [selectedRecord, setSelectedRecord] = useState<LoanRecord | null>(null);
   const [detailsModalOpen, setDetailsModalOpen] = useState(false);
-  const [records, setRecords] = useState<LoanRecord[]>([]);
+  //const [records, setRecords] = useState<LoanRecord[]>([]);
   const [exporting, setExporting] = useState(false);
 
   
@@ -126,16 +126,18 @@ export default function RecordsPage() {
     }
   );
   const itemsPerPage = 20;
+  const records: LoanRecord[] = fetchedRecords ?? [];
+
 
   // Update local records state when fetchedRecords changes
-  useEffect(() => {
-    if (fetchedRecords && fetchedRecords.length > 0) {
-      console.log('Setting records from useLoanRecords:', fetchedRecords.length);
-      setRecords(fetchedRecords);
-    } else {
-      console.log('No records received from useLoanRecords');
-    }
-  }, [fetchedRecords]);
+  // useEffect(() => {
+  //   if (fetchedRecords && fetchedRecords.length > 0) {
+  //     console.log('Setting records from useLoanRecords:', fetchedRecords.length);
+  //     setRecords(fetchedRecords);
+  //   } else {
+  //     console.log('No records received from useLoanRecords');
+  //   }
+  // }, [fetchedRecords]);
 
   // Get the current dataset
   const currentDataset = useMemo(() => {
@@ -143,13 +145,13 @@ export default function RecordsPage() {
   }, [datasets, datasetId]);
 
   // Simulate loading data
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setLoading(false);
-    }, 1000);
+  // useEffect(() => {
+  //   const timer = setTimeout(() => {
+  //     setLoading(false);
+  //   }, 1000);
     
-    return () => clearTimeout(timer);
-  }, []);
+  //   return () => clearTimeout(timer);
+  // }, []);
 
   // Filter records based on search query
   const filteredRecords = useMemo(() => {
@@ -400,7 +402,6 @@ export default function RecordsPage() {
   useEffect(() => {
     console.log('Dataset ID:', datasetId);
     console.log('Records:', records);
-    console.log('Loading:', loading);
     console.log('Error:', recordsError);
     console.log('Total Records:', totalRecords);
     
@@ -465,7 +466,7 @@ export default function RecordsPage() {
     } else {
       console.log('No records available to display');
     }
-  }, [datasetId, records, loading, recordsError, totalRecords]);
+  }, [datasetId, records, recordsError, totalRecords]);
 
   // Add direct API call to debug
   useEffect(() => {
@@ -506,6 +507,11 @@ export default function RecordsPage() {
       checkRecords();
     }
   }, [datasetId]);
+
+  useEffect(() => {
+  setActivePage(1);
+}, [datasetId]);
+
 
   // Add reprocessing functionality
   const [reprocessing, setReprocessing] = useState(false);
@@ -605,7 +611,7 @@ export default function RecordsPage() {
     }
   };
 
-  if (datasetsLoading || recordsLoading || loading) {
+  if (datasetsLoading || recordsLoading ) {
     return (
       <Container size="xl" py="md">
         <Group justify="center" h={400}>
