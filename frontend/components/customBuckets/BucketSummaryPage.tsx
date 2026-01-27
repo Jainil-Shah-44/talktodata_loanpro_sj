@@ -20,6 +20,7 @@ type Props = {
 
 export default function CustomBucketSummaryPage({ datasetId,pageFilters,fileType }: Props) {
 
+  const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [showEmpty, setShowEmpty] = useState(true);
   const [useFilters, setFilterUse] = useState(true);
@@ -115,11 +116,14 @@ export default function CustomBucketSummaryPage({ datasetId,pageFilters,fileType
         opened={!!drawerId}
         onClose={(updated) => {
           setDrawerId(null);
+
+          if (updated && initialConfig?.id) {
+            setSelectedId(initialConfig.id);
+          }
+
           if (updated) {
-            // Optionally refresh summary if needed
-            const queryClient = useQueryClient();
-            queryClient.invalidateQueries({ queryKey: ["bucket-configs"] });
-            queryClient.invalidateQueries({ queryKey: ["bucket-summaries"] });
+            queryClient.invalidateQueries({ queryKey: ["bucket-configs", datasetId] });
+            queryClient.invalidateQueries({ queryKey: ["bucket-summaries", datasetId] });
           }
         }}
         datasetId={datasetId}

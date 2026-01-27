@@ -67,3 +67,5 @@ class BucketConfigUpdate(BaseModel):
     summary_type: Optional[str] = None # we will save file_type in this field
     bucket_config: Optional[List[Dict[str, Any]]] = None
     is_default: Optional[bool] = None
+    dataset_id: Optional[str] = None
+    target_field_is_json: Optional[bool] = None

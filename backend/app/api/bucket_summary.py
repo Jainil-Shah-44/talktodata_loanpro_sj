@@ -155,6 +155,15 @@ def update_bucket_config(
     if payload.is_default is not None:
         cfg.is_default = payload.is_default
 
+    if payload.summary_type is not None:
+        cfg.summary_type = payload.summary_type
+
+    if payload.dataset_id is not None:
+        cfg.dataset_id = payload.dataset_id
+
+    if payload.target_field_is_json is not None:
+        cfg.target_field_is_json = payload.target_field_is_json
+
     cfg.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(cfg)
@@ -186,6 +195,7 @@ def check_config(dataset_id, summaryType: str, targetField: str, db: Session = D
             BucketConfig.dataset_id == dataset_id,
             BucketConfig.summary_type == summaryType,
             BucketConfig.target_field == targetField,
+            BucketConfig.user_id == current_user.id,
         ).count() > 0
     else:
         exists = db.query(BucketConfig).filter(
@@ -203,6 +213,8 @@ def lookup_config(dataset_id: Optional[str], summary_type: str, target_field: st
         BucketConfig.summary_type == summary_type,
         BucketConfig.target_field == target_field
     )
+
+    q = q.filter(BucketConfig.user_id == current_user.id)
 
     if is_dataset_provided(dataset_id):
         q = q.filter(BucketConfig.dataset_id == dataset_id)

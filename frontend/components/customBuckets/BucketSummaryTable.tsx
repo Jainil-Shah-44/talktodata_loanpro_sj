@@ -5,6 +5,8 @@ import { Button } from "@mantine/core";
 import { IconDownload } from "@tabler/icons-react";
 import { exportBucketSummaryToExcel } from "@/src/utils/exportToExcel";
 import { formatCrores } from "@/src/utils/numberFormat";
+import { useMemo } from "react";
+
 type Props = {
   datasetId: string;
   configId: string | null;
@@ -58,15 +60,15 @@ export function BucketSummaryTable({
   useFilters,
   onToggleUseFilters,
 }: Props) {
-  const payload: BucketSummaryRequest | null = configId
-    ? {
-        config_ids: [configId],
-        //Mod hvb @ 08/12/2025 for passing empty array
-        //filters: useFilters == true ? filters : {},
-        filters: useFilters == true ? filters : null,
-        show_empty_buckets: showEmpty,
-      }
-    : null;
+  const payload = useMemo<BucketSummaryRequest | null>(() => {
+    if (!configId) return null;
+
+    return {
+      config_ids: [configId],
+      filters: useFilters ? filters : null,
+      show_empty_buckets: showEmpty,
+    };
+  }, [configId, filters, useFilters, showEmpty]);
 
   const { data, isLoading } = useBucketSummaries(datasetId, payload,useFilters);
 

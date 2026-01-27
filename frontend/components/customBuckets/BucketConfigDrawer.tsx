@@ -110,26 +110,26 @@ export default function BucketConfigDrawer({
       const cfg = initialConfig.bucket_config || [];
 
       //if (Array.isArray(cfg) && cfg.length === 1 && cfg[0]?.all) {
-      if (Array.isArray(cfg) && cfg.length === 1 && ((cfg[0]?.values?.[0]??"") == "ALL")) {
+      if (Array.isArray(cfg) && cfg.length === 1 && cfg[0]?.values?.[0] === "ALL") {
         setBucketType("string");
         setAutoStringMode(true);
         setStringRows([]);
-      } else if (cfg.every((r) => "min" in r || "max" in r)) {
+      } else if (cfg.some((r) => "values" in r)) {
+        setBucketType("string");
+        setAutoStringMode(false);
+        setStringRows(
+          cfg.map((r) => ({
+            value: r.values?.[0] ?? "",
+            label: r.label ?? "",
+          }))
+        );
+      } else {
         setBucketType("numeric");
         setAutoStringMode(false);
         setNumericRows(
           cfg.map((r) => ({
             min: r.min ?? null,
             max: r.max ?? null,
-            label: r.label ?? "",
-          }))
-        );
-      } else {
-        setBucketType("string");
-        setAutoStringMode(false);
-        setStringRows(
-          cfg.map((r) => ({
-            value: r.value ?? "",
             label: r.label ?? "",
           }))
         );
@@ -313,8 +313,8 @@ export default function BucketConfigDrawer({
   const oldScope = initialConfig?.is_default ? "default" : "dataset";
   const newScope = isDefault ? "default" : "dataset";
 
-  //const targetDatasetId = isDefault ? null : datasetId;
-  const targetDatasetId = isDefault ? "default" : datasetId;
+  const targetDatasetId = isDefault ? null : datasetId;
+  //const targetDatasetId = isDefault ? "default" : datasetId;
   const finalBucketJson = buildBucketConfig();
 
   setSaving(true);
